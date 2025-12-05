@@ -10,6 +10,14 @@ from colabdesign.shared.plot import plot_pseudo_3D, make_animation, show_pdb
 from colabdesign.shared.protein import renum_pdb_str
 from colabdesign.af.alphafold.common import protein
 
+def _is_notebook():
+  try:
+    from IPython import get_ipython
+    shell = get_ipython().__class__.__name__
+    return shell == "ZMQInteractiveShell"
+  except Exception:
+    return False
+
 ####################################################
 # AF_UTILS - various utils (save, plot, etc)
 ####################################################
@@ -127,15 +135,25 @@ class _af_utils:
     '''
     if pdb_str is None:
       pdb_str = self.save_pdb(get_best=get_best, aux=aux)
-    view = show_pdb(pdb_str,
-                    show_sidechains=show_sidechains,
-                    show_mainchains=show_mainchains,
-                    color=color,
-                    Ls=self._lengths,
-                    color_HP=color_HP,
-                    size=size,
-                    animate=animate)
-    view.show()
+
+    if _is_notebook():
+      view = show_pdb(pdb_str,
+                      show_sidechains=show_sidechains,
+                      show_mainchains=show_mainchains,
+                      color=color,
+                      Ls=self._lengths,
+                      color_HP=color_HP,
+                      size=size,
+                      animate=animate)
+      view.show()
+    else:
+      outname = f"{self.protocol}_pdb.pdb"
+      try:
+        with open(outname, 'w') as f:
+          f.write(pdb_str)
+        print(f"Saved PDB to {outname}")
+      except Exception as e:
+        print(f"Failed saving PDB to {outname}: {e}")
   
   def plot_traj(self, dpi=100):
     fig = plt.figure(figsize=(5,5), dpi=dpi)
@@ -171,7 +189,14 @@ class _af_utils:
       ax2.legend(loc='center left')
     else:
       print("TODO")
-    plt.show()
+    # if in jupyter notebook, display plot, else save to file
+    if _is_notebook():
+      plt.show()
+    else:
+      outname = f"{self.protocol}_traj.png"
+      fig.savefig(outname)
+      plt.close(fig)
+    
 
   def clear_best(self):
     self._tmp["best"] = {}
