@@ -128,7 +128,7 @@ class _af_utils:
 
   def plot_pdb(self, show_sidechains=False, show_mainchains=False,
                color="pLDDT", color_HP=False, size=(800,480), animate=False,
-               get_best=True, aux=None, pdb_str=None):
+               get_best=True, aux=None, pdb_str=None, save_path=None):
     '''
     use py3Dmol to plot pdb coordinates
     - color=["pLDDT","chain","rainbow"]
@@ -147,7 +147,7 @@ class _af_utils:
                       animate=animate)
       view.show()
     else:
-      outname = f"{self.protocol}_pdb.pdb"
+      outname = save_path if save_path is not None else f"{self.protocol}_pdb.pdb"
       try:
         with open(outname, 'w') as f:
           f.write(pdb_str)
@@ -155,7 +155,7 @@ class _af_utils:
       except Exception as e:
         print(f"Failed saving PDB to {outname}: {e}")
   
-  def plot_traj(self, dpi=100):
+  def plot_traj(self, dpi=100, save_path=None):
     fig = plt.figure(figsize=(5,5), dpi=dpi)
     gs = GridSpec(4,1, figure=fig)
     ax1 = fig.add_subplot(gs[:3,:])
@@ -193,7 +193,7 @@ class _af_utils:
     if _is_notebook():
       plt.show()
     else:
-      outname = f"{self.protocol}_traj.png"
+      outname = save_path if save_path is not None else f"{self.protocol}_traj.png"
       fig.savefig(outname)
       plt.close(fig)
     

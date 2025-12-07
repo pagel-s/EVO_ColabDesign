@@ -1,3 +1,4 @@
+import math
 import random, os
 import jax
 import jax.numpy as jnp
@@ -100,11 +101,12 @@ class _af_design:
 
         ns_name = self._model_names
         ns = list(range(len(ns_name)))
+        
         if models is not None:
             models = models if isinstance(models, list) else [models]
             ns = [ns[n if isinstance(n, int) else ns_name.index(n)] for n in models]
 
-        m = min(num_models, len(ns))
+        m = int(min(num_models, len(ns)))
         if sample_models and m != len(ns):
             model_nums = np.random.choice(ns, (m,), replace=False)
         else:
@@ -884,7 +886,7 @@ class _af_design:
         self,
         iters=100,
         num_elites=100,
-        num_mutants=1,
+        mutation_rate=5,
         num_sequences=200,
         min_len=10,
         max_len=20,
@@ -898,7 +900,7 @@ class _af_design:
     ):
         """optimize using MAP-Elites"""
         assert num_elites > 0, "ERROR: invalid number of elites"
-        assert num_mutants > 0, "ERROR: invalid number of mutants"
+        assert mutation_rate > 0, "ERROR: invalid mutation rate"
         assert num_sequences > 0, "ERROR: invalid number of sequences"
         assert max_len > 5, "ERROR: invalid maximum sequence length"
         assert max_len > min_len, "ERROR: invalid minimum sequence length"
@@ -912,7 +914,7 @@ class _af_design:
 
         archive = Archive(archive_dims=len(archive_dims))
         init_archive = kwargs.pop("init_archive", [])
-        kwargs.pop("add_cyclic_offset", None)
+        kwargs.pop("verbose", None)
 
         # INITIALIZE ARCHIVE WITH PROVIDED SEQUENCES
         sequences = []
@@ -951,7 +953,7 @@ class _af_design:
             print(f"Initialized archive with {len(archive)} sequences")
 
         max_fitness = -np.inf
-        for i in track(range(iters), desc="Running MAP-Elites"):
+        for i in track(range(iters), description="Running MAP-Elites"):
             msg = (
                 f"Generation {i},\n"
                 f"Current max fitness {max_fitness:.3f},\n"
@@ -1007,12 +1009,14 @@ class _af_design:
             elif i > 0:
                 sequences = []
                 # perform mutation
+                
+                                
                 mutated_sequences = [
                     self._mutate(
                         np.array(eseq.seq).reshape(-1, eseq.seq_len),
                         plddt=eseq.plddt,
                         logits=None,
-                        mutation_rate=num_mutants,
+                        mutation_rate=math.ceil(len(eseq.seq_len) * (mutation_rate / 100)),
                     )[0]
                     for eseq in archive.elites
                 ]
@@ -1077,7 +1081,7 @@ class _af_design:
                     )
 
             print(f"Number of sequences to evaluate: {len(sequences)}")
-            for seq in track(sequences, desc="Evaluating sequences"):
+            for seq in track(sequences, description="Evaluating sequences"):
                 inputs_prep["binder_len"] = seq.seq_len
                 if negative_model is not None:
                     negative_inputs["binder_len"] = seq.seq_len
@@ -1148,15 +1152,15 @@ class _af_design:
                             f"On target fitness: {on_target_fitness:.3f}, Off target fitness: {off_target_fitness:.3f}"
                         )
                         negative_model.save_pdb(
-                            f"results/{experiment_name}/pdb/JAK2_{seq.aa_seq}.pdb"
+                            f"{experiment_name}/pdb/JAK2_{seq.aa_seq}.pdb"
                         )
                     else:
                         print(f"On target fitness: {on_target_fitness:.3f}")
-                    self.save_pdb(f"results/{experiment_name}/pdb/PDL1_{seq.aa_seq}.pdb")
+                    self.save_pdb(f"{experiment_name}/pdb/PDL1_{seq.aa_seq}.pdb")
                 # update archive
                 archive.add_to_archive(seq)
 
-                with open(f"results/{experiment_name}/all_seq.txt", "a") as f:
+                with open(f"{experiment_name}/all_seq.txt", "a") as f:
                     if negative_model is not None:
                         if i == 0:
                             f.write(
@@ -1173,7 +1177,7 @@ class _af_design:
                         )
 
         # save final elites
-        with open(f"results/{experiment_name}/final_elites.txt", "w") as f:
+        with open(f"{experiment_name}/final_elites.txt", "w") as f:
             if negative_model is not None:
                 f.write("seq_len, aa_seq, fitness, loss, plddt, plddt_negative\n")
             else:
