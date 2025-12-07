@@ -107,6 +107,10 @@ class _af_design:
             ns = [ns[n if isinstance(n, int) else ns_name.index(n)] for n in models]
 
         m = int(min(num_models, len(ns)))
+        print("ns_name:", ns_name)
+        print("ns:", ns)
+        print(f"Using {m} model(s): ", end="")
+        
         if sample_models and m != len(ns):
             model_nums = np.random.choice(ns, (m,), replace=False)
         else:
@@ -909,6 +913,7 @@ class _af_design:
         model_flags = {
             k: kwargs.pop(k, None) for k in ["num_models", "sample_models", "models"]
         }
+        print("Models nums are:", self._get_model_nums(**model_flags))
         model_nums = self._get_model_nums(**model_flags)
 
 
@@ -1016,7 +1021,7 @@ class _af_design:
                         np.array(eseq.seq).reshape(-1, eseq.seq_len),
                         plddt=eseq.plddt,
                         logits=None,
-                        mutation_rate=math.ceil(len(eseq.seq_len) * (mutation_rate / 100)),
+                        mutation_rate=math.ceil(eseq.seq_len * (mutation_rate / 100)),
                     )[0]
                     for eseq in archive.elites
                 ]
