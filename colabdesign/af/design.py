@@ -106,9 +106,10 @@ class _af_design:
             models = models if isinstance(models, list) else [models]
             ns = [ns[n if isinstance(n, int) else ns_name.index(n)] for n in models]
 
-        m = int(min(num_models, len(ns)))
+        m = int(max(min(num_models, len(ns)), 1))
         print("ns_name:", ns_name)
         print("ns:", ns)
+        m = 1
         print(f"Using {m} model(s): ", end="")
         
         if sample_models and m != len(ns):
@@ -137,6 +138,7 @@ class _af_design:
         # decide which model params to use
         if model_nums is None:
             model_nums = self._get_model_nums(num_models, sample_models, models)
+        print(f"Model nums: {model_nums}")
         assert len(model_nums) > 0, "ERROR: no model params defined"
 
         # loop through model params
@@ -1157,11 +1159,11 @@ class _af_design:
                             f"On target fitness: {on_target_fitness:.3f}, Off target fitness: {off_target_fitness:.3f}"
                         )
                         negative_model.save_pdb(
-                            f"{experiment_name}/pdb/JAK2_{seq.aa_seq}.pdb"
+                            f"{experiment_name}/pdb/contrastive_fitness{off_target_fitness:.3f}_{seq.aa_seq}.pdb"
                         )
                     else:
                         print(f"On target fitness: {on_target_fitness:.3f}")
-                    self.save_pdb(f"{experiment_name}/pdb/PDL1_{seq.aa_seq}.pdb")
+                    self.save_pdb(f"{experiment_name}/pdb/fitness{seq.fitness:.3f}_{seq.aa_seq}.pdb")
                 # update archive
                 archive.add_to_archive(seq)
 
