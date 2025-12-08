@@ -62,36 +62,35 @@ class Sequence:
   fitness: float = 0.0
   aux: dict = None
   MIN_LEN: int = 20
-  MAX_LEN: int = 250
+  MAX_LEN: int = 50
   
   def __post_init__(self):
     self.feature_vector = np.array([(self.seq_len - self.MIN_LEN)/ (self.MAX_LEN - self.MIN_LEN), self.perc_hydrophob, self.perc_polar, self.perc_charged, self.perc_other])
     self.aa_seq = "".join([residue_constants.restypes[x] for x in self.seq])
     
-def sample_length(n, MIN_LEN=20, MAX_LEN=250):
-  return (np.random.choice(np.arange(MIN_LEN, MAX_LEN+1), n) - MIN_LEN) / (MAX_LEN - MIN_LEN)
+def sample_length(n, min_len=20, max_len=50):
+  return (np.random.choice(np.arange(min_len, max_len+1), n) - min_len) / (max_len - min_len)
 
-def cvt(k, dim, samples):
-    print("Computing CVT (this can take a while...):")
+def cvt(k, dim, samples, min_len=20, max_len=50):
     x = np.random.rand(samples, dim -1)
-    x = np.hstack((sample_length(samples).reshape(-1,1), x))
-    
+    x = np.hstack((sample_length(samples, min_len=min_len, max_len=max_len).reshape(-1,1), x))
+    print("CVT input shape:", x.shape)
     k_means = KMeans(init='k-means++', n_clusters=k,
                      n_init="auto", verbose=0)
     k_means.fit(x)
     return k_means.cluster_centers_
 
-def create_cvt(n_niches, dim_map, samples):
+def create_cvt(n_niches, dim_map, samples, min_len=20, max_len=50):
     c = cvt(n_niches, dim_map,
-              samples)
+              samples, min_len=min_len, max_len=max_len)
     kdt = KDTree(c, leaf_size=30, metric='euclidean')
     return c, kdt
 
 class Archive:
-  def __init__(self, archive_dims, niches=500, samples=25_000):
+  def __init__(self, archive_dims, niches=500, samples=25_000, min_len=20, max_len=50):
     self.archive = {}
     self.archive_dims = archive_dims
-    self.c, self.kdt = create_cvt(niches, archive_dims, samples)
+    self.c, self.kdt = create_cvt(niches, archive_dims, samples, min_len=min_len, max_len=max_len)
 
   def add_to_archive(self, seq: Sequence):
     seq_key = tuple(seq.seq)

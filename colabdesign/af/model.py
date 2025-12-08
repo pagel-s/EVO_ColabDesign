@@ -238,6 +238,8 @@ class mk_af_model(design_model, _af_inputs, _af_loss, _af_prep, _af_design, _af_
   
       # weighted loss
       w = opt["weights"]
+      # print("Loss components: ", end="")
+      # jax.debug.print("losses: {}", aux["losses"])
       loss = sum([v * w[k] if k in w else v for k,v in aux["losses"].items()])
       return loss, aux
     

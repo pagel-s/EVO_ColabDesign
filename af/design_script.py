@@ -298,7 +298,7 @@ def run_binder_design(
         if af_model_contrastive is not None:
             add_i_ptm_loss(af_model_contrastive, weights_iptm)
 
-    if advanced_settings.pop("use_termini_distance_loss", True):
+    if advanced_settings.pop("use_termini_distance_loss", False):
         # termini distance loss
         weights_termini_loss = advanced_settings.pop("weights_termini_loss", 0.1)
         add_termini_distance_loss(af_model, weights_termini_loss)

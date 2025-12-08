@@ -107,10 +107,10 @@ class _af_design:
             ns = [ns[n if isinstance(n, int) else ns_name.index(n)] for n in models]
 
         m = int(max(min(num_models, len(ns)), 1))
-        print("ns_name:", ns_name)
-        print("ns:", ns)
+        # print("ns_name:", ns_name)
+        # print("ns:", ns)
         m = 1
-        print(f"Using {m} model(s): ", end="")
+        # print(f"Using {m} model(s): ", end="")
         
         if sample_models and m != len(ns):
             model_nums = np.random.choice(ns, (m,), replace=False)
@@ -138,7 +138,6 @@ class _af_design:
         # decide which model params to use
         if model_nums is None:
             model_nums = self._get_model_nums(num_models, sample_models, models)
-        print(f"Model nums: {model_nums}")
         assert len(model_nums) > 0, "ERROR: no model params defined"
 
         # loop through model params
@@ -828,7 +827,7 @@ class _af_design:
     # design MAP-Elites
     # ---------------------------------------------------------------------------------
 
-    def _crossover(self, seq1, seq2, plddt1=None, plddt2=None, max_len=20, MIN_LEN=10):
+    def _crossover(self, seq1, seq2, plddt1=None, plddt2=None, max_len=20, min_len=10):
       '''crossover between two sequences'''
       assert len(seq1) == len(plddt1), "ERROR: Sequence 1 and PLDDT 1 have different lengths"
       assert len(seq2) == len(plddt2), "ERROR: Sequence 2 and PLDDT 2 have different lengths"
@@ -876,14 +875,14 @@ class _af_design:
           sequence.extend(seq2_chunks.pop(0))
           plddt2_chunks.pop(0)
       
-      if len(sequence) < MIN_LEN:
+      if len(sequence) < min_len:
         if len(seq2_chunks) > 0:
           for subl in seq2_chunks:
             sequence.extend(subl)
         else:
-          sequence.extend(np.random.randint(0, self._args["alphabet_size"], MIN_LEN - len(sequence)))
+          sequence.extend(np.random.randint(0, self._args["alphabet_size"], min_len - len(sequence)))
       
-      if len(sequence) < MIN_LEN:
+      if len(sequence) < min_len:
         print("ERROR: invalid sequence length")   
       
       return sequence[:max_len]
@@ -919,7 +918,7 @@ class _af_design:
         model_nums = self._get_model_nums(**model_flags)
 
 
-        archive = Archive(archive_dims=len(archive_dims))
+        archive = Archive(archive_dims=len(archive_dims), min_len=min_len, max_len=max_len)
         init_archive = kwargs.pop("init_archive", [])
         kwargs.pop("verbose", None)
 
@@ -955,12 +954,14 @@ class _af_design:
                         perc_charged=perc_charged,
                         perc_other=perc_other,
                         seq_len=len(seq),
+                        MAX_LEN=max_len,
+                        MIN_LEN=min_len,
                     )
                 )
             print(f"Initialized archive with {len(archive)} sequences")
 
         max_fitness = -np.inf
-        for i in track(range(iters), description="Running MAP-Elites"):
+        for i in track(range(iters), description="Running MAP-Elites", total=iters):
             msg = (
                 f"Generation {i},\n"
                 f"Current max fitness {max_fitness:.3f},\n"
@@ -1010,6 +1011,8 @@ class _af_design:
                             perc_charged=perc_charged,
                             perc_other=perc_other,
                             seq_len=seq_len,
+                            MAX_LEN=max_len,
+                            MIN_LEN=min_len,
                         )
                     )
             # NEXT GENERATION PERFORM MUTATION AND CROSSOVER GIVEN ELITES
@@ -1042,6 +1045,7 @@ class _af_design:
                             plddt1=seq1.plddt,
                             plddt2=seq2.plddt,
                             max_len=max_len,
+                            min_len=min_len,
                         )
                         crossover_sequences.append(new_seq)
 
@@ -1084,11 +1088,13 @@ class _af_design:
                             perc_charged=perc_charged,
                             perc_other=perc_other,
                             seq_len=len(new_seq),
+                            MAX_LEN=max_len,
+                            MIN_LEN=min_len,
                         )
                     )
 
             print(f"Number of sequences to evaluate: {len(sequences)}")
-            for seq in track(sequences, description="Evaluating sequences"):
+            for seq in track(sequences, description="Evaluating sequences", total=len(sequences)):
                 inputs_prep["binder_len"] = seq.seq_len
                 if negative_model is not None:
                     negative_inputs["binder_len"] = seq.seq_len
@@ -1148,6 +1154,8 @@ class _af_design:
                     ) / 2
                 else:
                     seq.fitness = on_target_fitness
+                
+                # TODO: what is correct? Fitness should probs be some combination of the loss?!!!!
                 seq.loss = aux["log"]["loss"]
 
                 if seq.fitness > max_fitness:
