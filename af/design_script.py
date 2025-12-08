@@ -20,6 +20,8 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 import numpy as np
+import jax
+import jax.numpy as jnp
 
 try:
     from google.colab import files
@@ -27,6 +29,94 @@ except ImportError:
     files = None
 
 from colabdesign import mk_afdesign_model, clear_mem
+from colabdesign.af.loss import get_ptm, mask_loss, get_dgram_bins, _get_con_loss
+from colabdesign.af.alphafold.common import residue_constants
+
+##### BINDCRAFT loss functions ######
+
+def add_rg_loss(self, weight=0.1):
+    '''add radius of gyration loss'''
+    def loss_fn(inputs, outputs):
+        xyz = outputs["structure_module"]
+        ca = xyz["final_atom_positions"][:,residue_constants.atom_order["CA"]]
+        ca = ca[-self._binder_len:]
+        rg = jnp.sqrt(jnp.square(ca - ca.mean(0)).sum(-1).mean() + 1e-8)
+        rg_th = 2.38 * ca.shape[0] ** 0.365
+
+        rg = jax.nn.elu(rg - rg_th)
+        return {"rg":rg}
+
+    self._callbacks["model"]["loss"].append(loss_fn)
+    self.opt["weights"]["rg"] = weight
+
+# Define interface pTM loss for colabdesign
+def add_i_ptm_loss(self, weight=0.1):
+    def loss_iptm(inputs, outputs):
+        p = 1 - get_ptm(inputs, outputs, interface=True)
+        i_ptm = mask_loss(p)
+        return {"i_ptm": i_ptm}
+    
+    self._callbacks["model"]["loss"].append(loss_iptm)
+    self.opt["weights"]["i_ptm"] = weight
+
+# add helicity loss
+def add_helix_loss(self, weight=0):
+    def binder_helicity(inputs, outputs):  
+      if "offset" in inputs:
+        offset = inputs["offset"]
+      else:
+        idx = inputs["residue_index"].flatten()
+        offset = idx[:,None] - idx[None,:]
+
+      # define distogram
+      dgram = outputs["distogram"]["logits"]
+      dgram_bins = get_dgram_bins(outputs)
+      mask_2d = np.outer(np.append(np.zeros(self._target_len), np.ones(self._binder_len)), np.append(np.zeros(self._target_len), np.ones(self._binder_len)))
+
+      x = _get_con_loss(dgram, dgram_bins, cutoff=6.0, binary=True)
+      if offset is None:
+        if mask_2d is None:
+          helix_loss = jnp.diagonal(x,3).mean()
+        else:
+          helix_loss = jnp.diagonal(x * mask_2d,3).sum() + (jnp.diagonal(mask_2d,3).sum() + 1e-8)
+      else:
+        mask = offset == 3
+        if mask_2d is not None:
+          mask = jnp.where(mask_2d,mask,0)
+        helix_loss = jnp.where(mask,x,0.0).sum() / (mask.sum() + 1e-8)
+
+      return {"helix":helix_loss}
+    self._callbacks["model"]["loss"].append(binder_helicity)
+    self.opt["weights"]["helix"] = weight
+
+# add N- and C-terminus distance loss
+def add_termini_distance_loss(self, weight=0.1, threshold_distance=7.0):
+    '''Add loss penalizing the distance between N and C termini'''
+    def loss_fn(inputs, outputs):
+        xyz = outputs["structure_module"]
+        ca = xyz["final_atom_positions"][:, residue_constants.atom_order["CA"]]
+        ca = ca[-self._binder_len:]  # Considering only the last _binder_len residues
+
+        # Extract N-terminus (first CA atom) and C-terminus (last CA atom)
+        n_terminus = ca[0]
+        c_terminus = ca[-1]
+
+        # Compute the distance between N and C termini
+        termini_distance = jnp.linalg.norm(n_terminus - c_terminus)
+
+        # Compute the deviation from the threshold distance using ELU activation
+        deviation = jax.nn.elu(termini_distance - threshold_distance)
+
+        # Ensure the loss is never lower than 0
+        termini_distance_loss = jax.nn.relu(deviation)
+        return {"NC": termini_distance_loss}
+
+    # Append the loss function to the model callbacks
+    self._callbacks["model"]["loss"].append(loss_fn)
+    self.opt["weights"]["NC"] = weight
+
+#####################################
+
 
 
 def prepare_inputs(
@@ -117,6 +207,7 @@ def run_binder_design(
     contrastive_target_hotspot_residues=None,
     target_hotspot_residues=None,
     experiment_folder="binder_mapelites",
+    helicity_value=0.5,
 ):
     """Binder design"""
     print("\n" + "=" * 60)
@@ -158,7 +249,7 @@ def run_binder_design(
         target_hotspot_residues=target_hotspot_residues,
         seed=seed,
         advanced_settings=advanced_settings,
-    )
+    )    
 
     if contrastive_pdb is not None:
         af_model_contrastive = mk_afdesign_model(
@@ -189,6 +280,35 @@ def run_binder_design(
             rm_target_seq=advanced_settings["rm_template_seq_design"],
             rm_target_sc=advanced_settings["rm_template_sc_design"],
         )
+
+
+        ### additional loss functions
+    if advanced_settings.pop("use_rg_loss", True):
+        # radius of gyration loss
+        weights_rg = advanced_settings.pop("weights_rg", 0.3)
+        add_rg_loss(af_model, weights_rg)
+        if af_model_contrastive is not None:
+            add_rg_loss(af_model_contrastive, weights_rg)
+
+
+    if advanced_settings.pop("use_i_ptm_loss", True):
+        # interface pTM loss
+        weights_iptm = advanced_settings.pop("weights_iptm", 0.05)
+        add_i_ptm_loss(af_model, weights_iptm)
+        if af_model_contrastive is not None:
+            add_i_ptm_loss(af_model_contrastive, weights_iptm)
+
+    if advanced_settings.pop("use_termini_distance_loss", True):
+        # termini distance loss
+        weights_termini_loss = advanced_settings.pop("weights_termini_loss", 0.1)
+        add_termini_distance_loss(af_model, weights_termini_loss)
+        if af_model_contrastive is not None:
+            add_termini_distance_loss(af_model_contrastive, weights_termini_loss)
+    # add the helicity loss
+    add_helix_loss(af_model, helicity_value)
+    if af_model_contrastive is not None:
+        add_helix_loss(af_model_contrastive, helicity_value)
+
 
     print(f"Sequence length: {af_model._len}")
     print(f"Weights: {af_model.opt['weights']}")
