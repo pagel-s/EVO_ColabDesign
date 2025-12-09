@@ -1148,20 +1148,20 @@ class _af_design:
                     )
 
             print(f"Number of sequences to evaluate: {len(sequences)}")
-            for seq in track(sequences, description=f"Evaluating sequences {len(sequences)}", total=len(sequences)):
+            for sidx, seq in track(enumerate(sequences), description=f"Evaluating sequences {len(sequences)}", total=len(sequences)):
                 inputs_prep["binder_len"] = seq.seq_len
 
                 # reinitialize pdb and set binder length
                 _tmp = self._tmp
                 # self._prep_binder(**inputs_prep)
-                set_up_model(self,inputs_prep)
+                set_up_model(self, inputs_prep, add_adv_losses=False)
                 self._tmp = _tmp
 
                 if negative_model is not None:
                     negative_inputs["binder_len"] = seq.seq_len
                     _tmp = negative_model._tmp
                     # negative_model._prep_binder(**negative_inputs)
-                    set_up_model(negative_model, negative_inputs)
+                    set_up_model(negative_model, negative_inputs, add_adv_losses=False)
                     negative_model._tmp = _tmp
                 
                 # onehot encode sequence
@@ -1185,7 +1185,7 @@ class _af_design:
                 seq.aux = aux
                 seq.plddt = aux["all"]["plddt"].mean(0)[self._target_len :]
                 
-                on_target_fitness = aux["log"]["loss"]
+                on_target_fitness = -aux["log"]["loss"]
                 # on_target_fitness = np.mean(
                 #     aux["all"]["plddt"].mean(0)[self._target_len :]
                 # )
@@ -1205,7 +1205,7 @@ class _af_design:
                         negative_model._target_len :
                     ]
                     
-                    off_target_fitness = aux_negative["log"]["loss"]
+                    off_target_fitness = -aux_negative["log"]["loss"]
                     # off_target_fitness = np.mean(
                     #     aux_negative["all"]["plddt"].mean(0)[
                     #         negative_model._target_len :
@@ -1242,7 +1242,7 @@ class _af_design:
 
                 with open(f"{experiment_name}/all_seq.txt", "a") as f:
                     if negative_model is not None:
-                        if gen == 0:
+                        if gen == 0 and sidx == 0:
                             f.write(
                                 "seq_len, aa_seq, fitness, loss, plddt, plddt_negative\n"
                             )
@@ -1250,7 +1250,7 @@ class _af_design:
                             f"{seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}, {np.mean(seq.plddt_negative)}\n"
                         )
                     else:
-                        if gen == 0:
+                        if gen == 0 and sidx == 0:
                             f.write("seq_len, aa_seq, fitness, loss, plddt\n")
                         f.write(
                             f"{seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}\n"
