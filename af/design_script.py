@@ -31,89 +31,7 @@ except ImportError:
 from colabdesign import mk_afdesign_model, clear_mem
 from colabdesign.af.loss import get_ptm, mask_loss, get_dgram_bins, _get_con_loss
 from colabdesign.af.alphafold.common import residue_constants
-
-##### BINDCRAFT loss functions ######
-
-def add_rg_loss(self, weight=0.1):
-    '''add radius of gyration loss'''
-    def loss_fn(inputs, outputs):
-        xyz = outputs["structure_module"]
-        ca = xyz["final_atom_positions"][:,residue_constants.atom_order["CA"]]
-        ca = ca[-self._binder_len:]
-        rg = jnp.sqrt(jnp.square(ca - ca.mean(0)).sum(-1).mean() + 1e-8)
-        rg_th = 2.38 * ca.shape[0] ** 0.365
-
-        rg = jax.nn.elu(rg - rg_th)
-        return {"rg":rg}
-
-    self._callbacks["model"]["loss"].append(loss_fn)
-    self.opt["weights"]["rg"] = weight
-
-# Define interface pTM loss for colabdesign
-def add_i_ptm_loss(self, weight=0.1):
-    def loss_iptm(inputs, outputs):
-        p = 1 - get_ptm(inputs, outputs, interface=True)
-        i_ptm = mask_loss(p)
-        return {"i_ptm": i_ptm}
-    
-    self._callbacks["model"]["loss"].append(loss_iptm)
-    self.opt["weights"]["i_ptm"] = weight
-
-# add helicity loss
-def add_helix_loss(self, weight=0):
-    def binder_helicity(inputs, outputs):  
-      if "offset" in inputs:
-        offset = inputs["offset"]
-      else:
-        idx = inputs["residue_index"].flatten()
-        offset = idx[:,None] - idx[None,:]
-
-      # define distogram
-      dgram = outputs["distogram"]["logits"]
-      dgram_bins = get_dgram_bins(outputs)
-      mask_2d = np.outer(np.append(np.zeros(self._target_len), np.ones(self._binder_len)), np.append(np.zeros(self._target_len), np.ones(self._binder_len)))
-
-      x = _get_con_loss(dgram, dgram_bins, cutoff=6.0, binary=True)
-      if offset is None:
-        if mask_2d is None:
-          helix_loss = jnp.diagonal(x,3).mean()
-        else:
-          helix_loss = jnp.diagonal(x * mask_2d,3).sum() + (jnp.diagonal(mask_2d,3).sum() + 1e-8)
-      else:
-        mask = offset == 3
-        if mask_2d is not None:
-          mask = jnp.where(mask_2d,mask,0)
-        helix_loss = jnp.where(mask,x,0.0).sum() / (mask.sum() + 1e-8)
-
-      return {"helix":helix_loss}
-    self._callbacks["model"]["loss"].append(binder_helicity)
-    self.opt["weights"]["helix"] = weight
-
-# add N- and C-terminus distance loss
-def add_termini_distance_loss(self, weight=0.1, threshold_distance=7.0):
-    '''Add loss penalizing the distance between N and C termini'''
-    def loss_fn(inputs, outputs):
-        xyz = outputs["structure_module"]
-        ca = xyz["final_atom_positions"][:, residue_constants.atom_order["CA"]]
-        ca = ca[-self._binder_len:]  # Considering only the last _binder_len residues
-
-        # Extract N-terminus (first CA atom) and C-terminus (last CA atom)
-        n_terminus = ca[0]
-        c_terminus = ca[-1]
-
-        # Compute the distance between N and C termini
-        termini_distance = jnp.linalg.norm(n_terminus - c_terminus)
-
-        # Compute the deviation from the threshold distance using ELU activation
-        deviation = jax.nn.elu(termini_distance - threshold_distance)
-
-        # Ensure the loss is never lower than 0
-        termini_distance_loss = jax.nn.relu(deviation)
-        return {"NC": termini_distance_loss}
-
-    # Append the loss function to the model callbacks
-    self._callbacks["model"]["loss"].append(loss_fn)
-    self.opt["weights"]["NC"] = weight
+from colabdesign.af.model_prep import set_up_model
 
 #####################################
 
@@ -137,14 +55,50 @@ def prepare_inputs(
     advanced_settings = advanced_settings or {}
 
     inputs_prep = {
-        "pdb_filename": starting_pdb if starting_pdb else None,
+        "pdb_filename": starting_pdb,
         "chain": chain or "A",
-        "binder_len": int(length) if length is not None else 100,
+        "binder_len": int(length),
         "hotspot": target_hotspot_residues if target_hotspot_residues else None,
         "seed": int(seed) if seed is not None else 0,
         "rm_aa": advanced_settings.get("omit_AAs", None),
         "rm_target_seq": advanced_settings.get("rm_template_seq_design", False),
         "rm_target_sc": advanced_settings.get("rm_template_sc_design", False),
+        "model_prep": {
+            "weights": {
+                "pae":advanced_settings["weights_pae_intra"],
+                "plddt":advanced_settings["weights_plddt"],
+                "i_pae":advanced_settings["weights_pae_inter"],
+                "con":advanced_settings["weights_con_intra"],
+                "i_con":advanced_settings["weights_con_inter"],
+            },
+            "opt": {
+                "con": {
+                    "num":advanced_settings["intra_contact_number"],
+                    "cutoff":advanced_settings["intra_contact_distance"],
+                    "binary":False,
+                    "seqsep":9
+                },
+                "i_con": {
+                    "num":advanced_settings["inter_contact_number"],
+                    "cutoff":advanced_settings["inter_contact_distance"],
+                    "binary":False
+                }
+            },
+            "losses":
+                {
+                    "use_rg_loss": advanced_settings.get("use_rg_loss", True),
+                    "weights_rg": advanced_settings.get("weights_rg", 0.3),
+                    
+                    "use_i_ptm_loss": advanced_settings.get("use_i_ptm_loss", True),
+                    "weights_iptm": advanced_settings.get("weights_iptm", 0.05),
+                    
+                    "use_termini_distance_loss": advanced_settings.get("use_termini_distance_loss", False),
+                    "weights_termini_loss": advanced_settings.get("weights_termini_loss", 0.1),
+                    
+                    "use_helicity_loss": advanced_settings.get("use_helicity_loss", True),
+                    "weights_helicity": advanced_settings.get("weights_helicity", -0.3)
+                }
+        }
     }
     return inputs_prep
 
@@ -231,16 +185,16 @@ def run_binder_design(
         num_recycles=advanced_settings.get("num_recycles", 3),
         best_metric="loss",
     )
-    af_model.prep_inputs(
-        pdb_filename=pdb_file,
-        chain=chain,
-        binder_len=length,
-        hotspot=target_hotspot_residues,
-        seed=seed,
-        rm_aa=advanced_settings["omit_AAs"],
-        rm_target_seq=advanced_settings["rm_template_seq_design"],
-        rm_target_sc=advanced_settings["rm_template_sc_design"],
-    )
+    # af_model.prep_inputs(
+    #     pdb_filename=pdb_file,
+    #     chain=chain,
+    #     binder_len=length,
+    #     hotspot=target_hotspot_residues,
+    #     seed=seed,
+    #     rm_aa=advanced_settings["omit_AAs"],
+    #     rm_target_seq=advanced_settings["rm_template_seq_design"],
+    #     rm_target_sc=advanced_settings["rm_template_sc_design"],
+    # )
 
     inputs_prep = prepare_inputs(
         starting_pdb=pdb_file,
@@ -249,7 +203,18 @@ def run_binder_design(
         target_hotspot_residues=target_hotspot_residues,
         seed=seed,
         advanced_settings=advanced_settings,
-    )    
+    )
+        
+    
+    # af_model.opt["weights"].update({"pae":advanced_settings["weights_pae_intra"],
+    #                                 "plddt":advanced_settings["weights_plddt"],
+    #                                 "i_pae":advanced_settings["weights_pae_inter"],
+    #                                 "con":advanced_settings["weights_con_intra"],
+    #                                 "i_con":advanced_settings["weights_con_inter"],
+    #                                 })
+
+    # af_model.opt["con"].update({"num":advanced_settings["intra_contact_number"],"cutoff":advanced_settings["intra_contact_distance"],"binary":False,"seqsep":9})
+    # af_model.opt["i_con"].update({"num":advanced_settings["inter_contact_number"],"cutoff":advanced_settings["inter_contact_distance"],"binary":False})
 
     if contrastive_pdb is not None:
         af_model_contrastive = mk_afdesign_model(
@@ -270,50 +235,39 @@ def run_binder_design(
             advanced_settings=advanced_settings,
         )
 
-        af_model_contrastive.prep_inputs(
-            pdb_filename=contrastive_pdb,
-            chain=contrastive_chain,
-            binder_len=length,
-            hotspot=contrastive_target_hotspot_residues,
-            seed=seed,
-            rm_aa=advanced_settings["omit_AAs"],
-            rm_target_seq=advanced_settings["rm_template_seq_design"],
-            rm_target_sc=advanced_settings["rm_template_sc_design"],
-        )
-
-
-        ### additional loss functions
-    if advanced_settings.pop("use_rg_loss", True):
-        # radius of gyration loss
-        weights_rg = advanced_settings.pop("weights_rg", 0.3)
-        add_rg_loss(af_model, weights_rg)
-        if af_model_contrastive is not None:
-            add_rg_loss(af_model_contrastive, weights_rg)
-
-
-    if advanced_settings.pop("use_i_ptm_loss", True):
-        # interface pTM loss
-        weights_iptm = advanced_settings.pop("weights_iptm", 0.05)
-        add_i_ptm_loss(af_model, weights_iptm)
-        if af_model_contrastive is not None:
-            add_i_ptm_loss(af_model_contrastive, weights_iptm)
-
-    if advanced_settings.pop("use_termini_distance_loss", False):
-        # termini distance loss
-        weights_termini_loss = advanced_settings.pop("weights_termini_loss", 0.1)
-        add_termini_distance_loss(af_model, weights_termini_loss)
-        if af_model_contrastive is not None:
-            add_termini_distance_loss(af_model_contrastive, weights_termini_loss)
-    # add the helicity loss
-    add_helix_loss(af_model, helicity_value)
+        # af_model_contrastive.prep_inputs(
+        #     pdb_filename=contrastive_pdb,
+        #     chain=contrastive_chain,
+        #     binder_len=length,
+        #     hotspot=contrastive_target_hotspot_residues,
+        #     seed=seed,
+        #     rm_aa=advanced_settings["omit_AAs"],
+        #     rm_target_seq=advanced_settings["rm_template_seq_design"],
+        #     rm_target_sc=advanced_settings["rm_template_sc_design"],
+        # )
+        
+        # prepare_model(af_model_contrastive, contrastive_inputs["model_prep"])
+        
+        # af_model_contrastive.opt["weights"].update({"pae":advanced_settings["weights_pae_intra"],
+        #                                 "plddt":advanced_settings["weights_plddt"],
+        #                                 "i_pae":advanced_settings["weights_pae_inter"],
+        #                                 "con":advanced_settings["weights_con_intra"],
+        #                                 "i_con":advanced_settings["weights_con_inter"],
+        #                                 })
+        
+        # af_model_contrastive.opt["con"].update({"num":advanced_settings["intra_contact_number"],"cutoff":advanced_settings["intra_contact_distance"],"binary":False,"seqsep":9})
+        # af_model_contrastive.opt["i_con"].update({"num":advanced_settings["inter_contact_number"],"cutoff":advanced_settings["inter_contact_distance"],"binary":False})
+        
+    # add_losses(af_model, inputs_prep)
+    set_up_model(af_model, inputs_prep)
     if af_model_contrastive is not None:
-        add_helix_loss(af_model_contrastive, helicity_value)
+        set_up_model(af_model_contrastive, contrastive_inputs)
 
-
+    print("Model losses", af_model._callbacks["model"]["loss"])
     print(f"Sequence length: {af_model._len}")
     print(f"Weights: {af_model.opt['weights']}")
 
-    af_model.restart()
+    # af_model.restart()
 
     # Choose design method
     if design_method == "3stage":
@@ -356,7 +310,7 @@ def run_binder_design(
         )
     elif design_method == "mapelites":
         print(
-            f"\nRunning MAP-Elites: gens={mapelites_iters}, elites={num_elites}, max_len={max_len}"
+            f"\nRunning MAP-Elites: gens={mapelites_iters}, elites={num_elites}, max_len={max_len}, min_len={min_len}"
         )
         af_model.design_mapelites(
             iters=mapelites_iters,
@@ -371,6 +325,7 @@ def run_binder_design(
             negative_model=af_model_contrastive,
             negative_inputs=contrastive_inputs,
             mutation_rate=mutation_rate, # will be recalculated inside function for each binder of varying length
+            num_models=1
         )
     else:
         raise ValueError(f"Unknown design method: {design_method}")
@@ -637,6 +592,7 @@ Examples:
         ),
         target_hotspot_residues=config.pop("target_hotspot_residues", None),
         experiment_folder=outdir,
+        helicity_value=config.pop("weights_helicity", -0.3)
     )
 
     elapsed = time.time() - start_time

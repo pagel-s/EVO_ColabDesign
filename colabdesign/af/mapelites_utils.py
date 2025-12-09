@@ -61,11 +61,11 @@ class Sequence:
   centroid: np.ndarray = None
   fitness: float = 0.0
   aux: dict = None
-  MIN_LEN: int = 20
-  MAX_LEN: int = 50
+  min_len: int = 20
+  max_len: int = 50
   
   def __post_init__(self):
-    self.feature_vector = np.array([(self.seq_len - self.MIN_LEN)/ (self.MAX_LEN - self.MIN_LEN), self.perc_hydrophob, self.perc_polar, self.perc_charged, self.perc_other])
+    self.feature_vector = np.array([(self.seq_len - self.min_len)/ (self.max_len - self.min_len), self.perc_hydrophob, self.perc_polar, self.perc_charged, self.perc_other])
     self.aa_seq = "".join([residue_constants.restypes[x] for x in self.seq])
     
 def sample_length(n, min_len=20, max_len=50):

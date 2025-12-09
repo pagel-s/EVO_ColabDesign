@@ -4,11 +4,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from rich.progress import track
+from rich import print
 
 from colabdesign.af.alphafold.common import residue_constants
 from colabdesign.af.alphafold.common.cyclic_offset import add_cyclic_offset
 from colabdesign.shared.utils import copy_dict, update_dict, Key, dict_to_str, to_float, softmax, categorical, to_list, copy_missing
 from colabdesign.af.mapelites_utils import Archive, Sequence, AA_mapping, archive_dims, AA_idx
+from colabdesign.af.model_prep import set_up_model
+
+import json
 
 ####################################################
 # AF_DESIGN - design functions
@@ -92,6 +96,58 @@ class _af_design:
         self._k = 0
         self.set_optimizer()
 
+
+    def _make_log_entry(self, seq_obj, aux, gen, aux_negative=None):
+        """
+        Build a JSON-serializable log entry with all loss terms.
+        seq_obj is a Sequence from MAP-Elites (has seq_len, aa_seq, plddt, etc).
+        """
+        entry = {
+            "gen": int(gen),
+            "seq_len": int(seq_obj.seq_len),
+            "aa_seq": getattr(seq_obj, "aa_seq", None),
+            "fitness": float(getattr(seq_obj, "fitness", np.nan)),
+            "plddt_mean": float(np.mean(getattr(seq_obj, "plddt", np.nan))),
+            "loss": float(aux["log"]["loss"]),
+            "log": aux["log"],                  # all per-term loss-like values
+            "weights": self.opt.get("weights", {})  # useful for interpreting the loss
+        }
+        if aux_negative is not None:
+            entry["plddt_negative_mean"] = float(
+                np.mean(getattr(seq_obj, "plddt_negative", np.nan))
+            )
+            entry["neg_log"] = aux_negative["log"]
+        return entry
+
+    def _append_jsonl(self, path, obj):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps(obj) + "\n")
+
+    # def _loss_breakdown(self, aux=None):
+    #     """Return per-term loss values, weights, contributions, and intended direction."""
+    #     try:
+    #         a = self.aux if aux is None else aux
+    #         weights = self.opt.get("weights", {})
+    #         log = a.get("log", {})
+    #         terms = {}
+    #         total = 0.0
+    #         for k, w in weights.items():
+    #             if k in log and np.isfinite(log[k]) and np.isfinite(w):
+    #                 val = float(log[k])
+    #                 wt = float(w)
+    #                 contrib = wt * val
+    #                 terms[k] = {
+    #                     "value": val,
+    #                     "weight": wt,
+    #                     "contrib": contrib,
+    #                     "direction": ("minimize" if wt >= 0 else "maximize"),
+    #                 }
+    #                 total += contrib
+    #         return {"total": total, "terms": terms}
+    #     except Exception as e:
+    #         return {"error": str(e)}
+
     def _get_model_nums(self, num_models=None, sample_models=None, models=None):
         """decide which model params to use"""
         if num_models is None:
@@ -107,10 +163,7 @@ class _af_design:
             ns = [ns[n if isinstance(n, int) else ns_name.index(n)] for n in models]
 
         m = int(max(min(num_models, len(ns)), 1))
-        # print("ns_name:", ns_name)
-        # print("ns:", ns)
         m = 1
-        # print(f"Using {m} model(s): ", end="")
         
         if sample_models and m != len(ns):
             model_nums = np.random.choice(ns, (m,), replace=False)
@@ -910,6 +963,8 @@ class _af_design:
         assert max_len > 5, "ERROR: invalid maximum sequence length"
         assert max_len > min_len, "ERROR: invalid minimum sequence length"
 
+        os.makedirs(experiment_name, exist_ok=True)
+        os.makedirs(os.path.join(experiment_name, "pdb"), exist_ok=True)
         
         model_flags = {
             k: kwargs.pop(k, None) for k in ["num_models", "sample_models", "models"]
@@ -918,7 +973,7 @@ class _af_design:
         model_nums = self._get_model_nums(**model_flags)
 
 
-        archive = Archive(archive_dims=len(archive_dims), min_len=min_len, max_len=max_len)
+        archive = Archive(archive_dims=len(archive_dims), min_len=min_len, max_len=max_len, niches=num_elites)
         init_archive = kwargs.pop("init_archive", [])
         kwargs.pop("verbose", None)
 
@@ -954,16 +1009,16 @@ class _af_design:
                         perc_charged=perc_charged,
                         perc_other=perc_other,
                         seq_len=len(seq),
-                        MAX_LEN=max_len,
-                        MIN_LEN=min_len,
+                        max_len=max_len,
+                        min_len=min_len,
                     )
                 )
             print(f"Initialized archive with {len(archive)} sequences")
 
         max_fitness = -np.inf
-        for i in track(range(iters), description="Running MAP-Elites", total=iters):
+        for gen in track(range(iters), description=f"Running MAP-Elites {iters}", total=iters):
             msg = (
-                f"Generation {i},\n"
+                f"Generation {gen},\n"
                 f"Current max fitness {max_fitness:.3f},\n"
                 f"Number of elites {len(archive)},\n"
             )
@@ -971,7 +1026,7 @@ class _af_design:
             print_msg_box(msg=msg, indent=2, title="Generation Stats:")
 
             # IF NOT INIT_ARCHIVE PROVIDED RANDOM SAMPLE INITIAL POPULATION OF SIZE num_sequences
-            if i == 0 and not init_archive:
+            if gen == 0 and not init_archive:
                 sequences = []
                 while len(sequences) < num_sequences:
                     seq_len = np.random.randint(min_len, max_len + 1, 1)[0]
@@ -1011,16 +1066,15 @@ class _af_design:
                             perc_charged=perc_charged,
                             perc_other=perc_other,
                             seq_len=seq_len,
-                            MAX_LEN=max_len,
-                            MIN_LEN=min_len,
+                            max_len=max_len,
+                            min_len=min_len,
                         )
                     )
             # NEXT GENERATION PERFORM MUTATION AND CROSSOVER GIVEN ELITES
-            elif i > 0:
+            elif gen > 0:
                 sequences = []
                 # perform mutation
                 
-                                
                 mutated_sequences = [
                     self._mutate(
                         np.array(eseq.seq).reshape(-1, eseq.seq_len),
@@ -1033,10 +1087,10 @@ class _af_design:
                 # perform crossover
                 crossover_sequences = []
                 if len(archive.elites) > 1:
-                    for i in range(len(archive.elites)):
-                        seq1 = archive.elites[i]
+                    for eli in range(len(archive.elites)):
+                        seq1 = archive.elites[eli]
                         seq2 = random.choice(
-                            archive.elites[:i] + archive.elites[i + 1 :]
+                            archive.elites[:eli] + archive.elites[eli + 1 :]
                         )
 
                         new_seq = self._crossover(
@@ -1088,27 +1142,28 @@ class _af_design:
                             perc_charged=perc_charged,
                             perc_other=perc_other,
                             seq_len=len(new_seq),
-                            MAX_LEN=max_len,
-                            MIN_LEN=min_len,
+                            max_len=max_len,
+                            min_len=min_len,
                         )
                     )
 
             print(f"Number of sequences to evaluate: {len(sequences)}")
-            for seq in track(sequences, description="Evaluating sequences", total=len(sequences)):
+            for seq in track(sequences, description=f"Evaluating sequences {len(sequences)}", total=len(sequences)):
                 inputs_prep["binder_len"] = seq.seq_len
-                if negative_model is not None:
-                    negative_inputs["binder_len"] = seq.seq_len
 
                 # reinitialize pdb and set binder length
                 _tmp = self._tmp
-                self._prep_binder(**inputs_prep)
+                # self._prep_binder(**inputs_prep)
+                set_up_model(self,inputs_prep)
                 self._tmp = _tmp
 
                 if negative_model is not None:
+                    negative_inputs["binder_len"] = seq.seq_len
                     _tmp = negative_model._tmp
-                    negative_model._prep_binder(**negative_inputs)
+                    # negative_model._prep_binder(**negative_inputs)
+                    set_up_model(negative_model, negative_inputs)
                     negative_model._tmp = _tmp
-
+                
                 # onehot encode sequence
                 seq.oh = np.eye(self._args["alphabet_size"])[seq.seq]
 
@@ -1123,11 +1178,17 @@ class _af_design:
                     num_models=model_nums,
                     **kwargs,
                 )
+                print("Model losses", self._callbacks["model"]["loss"])
+                print(f"Sequence length: {self._len}")
+                print(f"Weights: {self.opt['weights']}")
+                # print(f"All: ", aux["all"])
                 seq.aux = aux
                 seq.plddt = aux["all"]["plddt"].mean(0)[self._target_len :]
-                on_target_fitness = np.mean(
-                    aux["all"]["plddt"].mean(0)[self._target_len :]
-                )
+                
+                on_target_fitness = aux["log"]["loss"]
+                # on_target_fitness = np.mean(
+                #     aux["all"]["plddt"].mean(0)[self._target_len :]
+                # )
 
                 if negative_model is not None:
                     if cycle_offset:
@@ -1143,11 +1204,13 @@ class _af_design:
                     seq.plddt_negative = aux_negative["all"]["plddt"].mean(0)[
                         negative_model._target_len :
                     ]
-                    off_target_fitness = np.mean(
-                        aux_negative["all"]["plddt"].mean(0)[
-                            negative_model._target_len :
-                        ]
-                    )
+                    
+                    off_target_fitness = aux_negative["log"]["loss"]
+                    # off_target_fitness = np.mean(
+                    #     aux_negative["all"]["plddt"].mean(0)[
+                    #         negative_model._target_len :
+                    #     ]
+                    # )
 
                     seq.fitness = (
                         on_target_fitness + (on_target_fitness - off_target_fitness)
@@ -1157,6 +1220,8 @@ class _af_design:
                 
                 # TODO: what is correct? Fitness should probs be some combination of the loss?!!!!
                 seq.loss = aux["log"]["loss"]
+                # print("Loss breakdown:", json.dumps(self._loss_breakdown(aux), indent=2))
+
 
                 if seq.fitness > max_fitness:
                     max_fitness = seq.fitness
@@ -1177,7 +1242,7 @@ class _af_design:
 
                 with open(f"{experiment_name}/all_seq.txt", "a") as f:
                     if negative_model is not None:
-                        if i == 0:
+                        if gen == 0:
                             f.write(
                                 "seq_len, aa_seq, fitness, loss, plddt, plddt_negative\n"
                             )
@@ -1185,11 +1250,15 @@ class _af_design:
                             f"{seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}, {np.mean(seq.plddt_negative)}\n"
                         )
                     else:
-                        if i == 0:
+                        if gen == 0:
                             f.write("seq_len, aa_seq, fitness, loss, plddt\n")
                         f.write(
                             f"{seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}\n"
                         )
+                # self._append_jsonl(
+                #     f"{experiment_name}/all_seq.jsonl",
+                #     self._make_log_entry(seq, aux, gen, aux_negative if negative_model is not None else None),
+                # )
 
         # save final elites
         with open(f"{experiment_name}/final_elites.txt", "w") as f:
@@ -1207,6 +1276,11 @@ class _af_design:
                     f.write(
                         f"{seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}\n"
                     )
+        # for seq in archive.elites:
+        #     self._append_jsonl(
+        #         f"{experiment_name}/final_elites.jsonl",
+        #         self._make_log_entry(seq, seq.aux, gen, getattr(seq, "aux_negative", None) if negative_model is not None else None),
+        #     )
 
         msg = (
             f"Final Generation,\n"
