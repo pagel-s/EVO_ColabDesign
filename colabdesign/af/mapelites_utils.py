@@ -63,6 +63,7 @@ class Sequence:
   aux: dict = None
   min_len: int = 20
   max_len: int = 50
+  niche_id: int = None
   
   def __post_init__(self):
     self.feature_vector = np.array([(self.seq_len - self.min_len)/ (self.max_len - self.min_len), self.perc_hydrophob, self.perc_polar, self.perc_charged, self.perc_other])
@@ -93,6 +94,7 @@ class Archive:
     self.c, self.kdt = create_cvt(niches, archive_dims, samples, min_len=min_len, max_len=max_len)
 
   def add_to_archive(self, seq: Sequence):
+    added = False
     seq_key = tuple(seq.seq)
     if seq_key in self.archive:
       return
@@ -101,12 +103,15 @@ class Archive:
     niche_id = np.argmin(niche_dist)
     niche = self.c[niche_id]
     centroid = self.kdt.query([niche])[1][0][0]
+    seq.niche_id = niche_id
     
     if centroid not in self.archive:
       self.archive[centroid] = seq
+      added = True
     elif seq.fitness > self.archive[centroid].fitness:
       self.archive[centroid] = seq
-    return None
+      added = True
+    return added
   
   def __contains__(self, key: tuple):
     if len(self.archive) == 0:
@@ -128,3 +133,64 @@ class Archive:
   @property
   def elites(self):
     return list(self.archive.values())
+
+
+
+### SAMPLING
+
+def sample_aas_by_category(n, aa_to_cat, category_probs=None, rng=None, return_indices=True):
+    """
+    Sample n amino acids where each category has equal probability (by default),
+    and AAs within a category are sampled uniformly. Works with any aa->category
+    mapping whose keys are one-letter codes or AF indices.
+
+    - aa_to_cat: dict like {"A":"hydrophob", ...} or {idx:"hydrophob", ...}
+    - category_probs: optional dict {category: prob} or array aligned to discovered categories
+    - return_indices: if True, return AF indices per residue_constants.restypes; else return list of letters
+    """
+    letters, cats = [], []
+    for k, v in aa_to_cat.items():
+        aa = k
+        if isinstance(k, int):
+            if 0 <= k < len(residue_constants.restypes):
+                aa = residue_constants.restypes[k]
+            else:
+                continue
+        if aa not in residue_constants.restypes:
+            continue
+        letters.append(aa)
+        cats.append(v)
+
+    # build category -> list of AAs
+    cat_to_aas = {}
+    for aa, cat in zip(letters, cats):
+        cat_to_aas.setdefault(cat, []).append(aa)
+
+    # keep only non-empty categories
+    cat_names = [c for c, lst in cat_to_aas.items() if lst]
+    if not cat_names:
+        raise ValueError("No valid amino acids found in mapping.")
+
+    C = len(cat_names)
+    if category_probs is None:
+        probs = np.full(C, 1.0 / C)
+    else:
+        if isinstance(category_probs, dict):
+            probs = np.array([float(category_probs.get(c, 0.0)) for c in cat_names], dtype=float)
+        else:
+            probs = np.array(category_probs, dtype=float)
+            assert probs.shape[0] == C, "category_probs length must match number of categories"
+        s = probs.sum()
+        assert s > 0, "category_probs must sum > 0"
+        probs = probs / s
+
+    if rng is None:
+        rng = np.random.default_rng()
+
+    # sample categories then AAs within each category
+    chosen_cats_idx = rng.choice(len(cat_names), size=int(n), p=probs)
+    seq_letters = [rng.choice(cat_to_aas[cat_names[i]]) for i in chosen_cats_idx]
+
+    if return_indices:
+        return np.array([residue_constants.restypes.index(a) for a in seq_letters], dtype=int)
+    return seq_letters

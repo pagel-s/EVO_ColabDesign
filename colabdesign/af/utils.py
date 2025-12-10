@@ -84,6 +84,7 @@ class _af_utils:
     def to_pdb_str(x, n=None):
       p_str = protein.to_pdb(protein.Protein(**x))
       p_str = "\n".join(p_str.splitlines()[1:-2])
+      # print(self._lengths, p_str)
       if renum_pdb: p_str = renum_pdb_str(p_str, self._lengths)
       if n is not None:
         p_str = f"MODEL{n:8}\n{p_str}\nENDMDL\n"

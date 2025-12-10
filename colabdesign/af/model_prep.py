@@ -27,8 +27,10 @@ def add_inputs(model, settings):
         rm_target_sc=settings["rm_target_sc"],
     )
 
-def set_up_model(model, settings, add_adv_losses=True):
-    add_inputs(model, settings)
-    prepare_model(model, settings["model_prep"])
+def set_up_model(model, settings, add_adv_losses=True, add_prep_inputs=True, add_prep_model=True):
+    if add_prep_inputs:
+        add_inputs(model, settings)
+    if add_prep_model:
+        prepare_model(model, settings["model_prep"])
     if add_adv_losses:
         add_losses(model, settings)

@@ -1,3 +1,4 @@
+from glob import glob
 import math
 import random, os
 import jax
@@ -9,7 +10,7 @@ from rich import print
 from colabdesign.af.alphafold.common import residue_constants
 from colabdesign.af.alphafold.common.cyclic_offset import add_cyclic_offset
 from colabdesign.shared.utils import copy_dict, update_dict, Key, dict_to_str, to_float, softmax, categorical, to_list, copy_missing
-from colabdesign.af.mapelites_utils import Archive, Sequence, AA_mapping, archive_dims, AA_idx
+from colabdesign.af.mapelites_utils import Archive, Sequence, AA_mapping, archive_dims, AA_idx, sample_aas_by_category
 from colabdesign.af.model_prep import set_up_model
 
 import json
@@ -29,6 +30,37 @@ import json
 #       \_single
 #
 ####################################################
+
+
+def onehot_to_aa_seq(onehot):
+    """
+    Convert one-hot or soft amino acid encoding to single-letter sequence(s).
+
+    Input:
+      - onehot: np.ndarray with shape (L, A) or (N, L, A)
+                where A == len(residue_constants.restypes)
+    Returns:
+      - If input is (L, A): str of length L
+      - If input is (N, L, A): list[str] of length N
+    """
+    onehot = np.asarray(onehot)
+    restypes = residue_constants.restypes
+    A = len(restypes)
+
+    if onehot.ndim == 2:
+        L, A_in = onehot.shape
+        assert A_in == A, f"Invalid alphabet size: expected {A}, got {A_in}"
+        idx = np.argmax(onehot, axis=-1)
+        return "".join(restypes[i] for i in idx)
+
+    elif onehot.ndim == 3:
+        N, L, A_in = onehot.shape
+        assert A_in == A, f"Invalid alphabet size: expected {A}, got {A_in}"
+        idx = np.argmax(onehot, axis=-1)  # (N, L)
+        return ["".join(restypes[i] for i in row) for row in idx]
+
+    else:
+        raise ValueError(f"Expected 2D or 3D array, got shape {onehot.shape}")
 
 
 def print_msg_box(msg, indent=1, width=None, title=None):
@@ -123,6 +155,33 @@ class _af_design:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a") as f:
             f.write(json.dumps(obj) + "\n")
+
+    def _save_best_niche_structure(self, seq_obj, experiment_name):
+        """
+        Save the current best structure for this niche (seq_obj.niche_id),
+        removing any prior file for that niche.
+        """
+        if seq_obj.niche_id is None:
+            return
+        out_dir = os.path.join(experiment_name, "elite_structure")
+        os.makedirs(out_dir, exist_ok=True)
+        niche_id = seq_obj.niche_id
+
+        # remove previous files for this niche
+        pattern = os.path.join(out_dir, f"niche{niche_id}_*.pdb")
+        for old in glob(pattern):
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+
+        # save current best with fitness and sequence in name
+        fname = os.path.join(
+            out_dir,
+            f"niche{niche_id}_fitness{seq_obj.fitness:.3f}_{seq_obj.aa_seq}.pdb",
+        )
+        print("lengths: ", self._lengths, ". Binder length: ", self._binder_len)
+        self.save_pdb(fname)
 
     # def _loss_breakdown(self, aux=None):
     #     """Return per-term loss values, weights, contributions, and intended direction."""
@@ -1030,8 +1089,11 @@ class _af_design:
                 sequences = []
                 while len(sequences) < num_sequences:
                     seq_len = np.random.randint(min_len, max_len + 1, 1)[0]
-                    seq = np.random.randint(0, self._args["alphabet_size"], seq_len)
-
+                    # seq = np.random.randint(0, self._args["alphabet_size"], seq_len)
+                    seq = sample_aas_by_category(seq_len, AA_mapping, return_indices=True)
+                    assert len(seq) == seq_len, "ERROR: invalid sequence length"
+                    print("New sequence: ", seq)
+                    
                     perc_hydrophob = np.mean(
                         [1 if AA_mapping[AA_idx[x]] == "hydrophob" else 0 for x in seq]
                     )
@@ -1149,39 +1211,42 @@ class _af_design:
 
             print(f"Number of sequences to evaluate: {len(sequences)}")
             for sidx, seq in track(enumerate(sequences), description=f"Evaluating sequences {len(sequences)}", total=len(sequences)):
-                inputs_prep["binder_len"] = seq.seq_len
-
+                print("#" * 20, f" sequence {sidx + 1}/{len(sequences)} ", "#" * 20)
+                inputs_prep["binder_len"] = int(seq.seq_len)
                 # reinitialize pdb and set binder length
-                _tmp = self._tmp
-                # self._prep_binder(**inputs_prep)
-                set_up_model(self, inputs_prep, add_adv_losses=False)
-                self._tmp = _tmp
+                # _tmp = self._tmp
+                self._prep_binder(**inputs_prep)
+                # self.restart(seq=seq.aa_seq ,reset_opt=False)
+                set_up_model(self, inputs_prep, add_adv_losses=True, add_prep_inputs=False, add_prep_model=True)
+                # self._tmp = _tmp
 
                 if negative_model is not None:
-                    negative_inputs["binder_len"] = seq.seq_len
+                    negative_inputs["binder_len"] = int(seq.seq_len)
+                    # negative_model.restart(seq=seq.aa_seq ,reset_opt=False)
                     _tmp = negative_model._tmp
-                    # negative_model._prep_binder(**negative_inputs)
-                    set_up_model(negative_model, negative_inputs, add_adv_losses=False)
+                    negative_model._prep_binder(**negative_inputs)
+                    set_up_model(negative_model, negative_inputs, add_adv_losses=True, add_prep_inputs=False, add_prep_model=True)
                     negative_model._tmp = _tmp
                 
                 # onehot encode sequence
-                seq.oh = np.eye(self._args["alphabet_size"])[seq.seq]
+                # seq.oh = np.eye(self._args["alphabet_size"])[seq.seq]
+                assert seq.seq_len == len(seq.seq), f"ERROR: sequence length mismatch {seq.seq_len}, {seq.seq}"
 
                 if cycle_offset:
                     add_cyclic_offset(self)
-
                 # inside predict it set the sequence of the binder
+                print("Expected sequence: ", seq.aa_seq)
                 aux = self.predict(
-                    seq.oh,
+                    seq.aa_seq,
                     return_aux=True,
                     verbose=False,
                     num_models=model_nums,
                     **kwargs,
                 )
-                print("Model losses", self._callbacks["model"]["loss"])
-                print(f"Sequence length: {self._len}")
-                print(f"Weights: {self.opt['weights']}")
-                # print(f"All: ", aux["all"])
+                print("Seq after predict ", self.get_seqs())
+                # print("Model losses", self._callbacks["model"]["loss"])
+                # print(f"Sequence length: {self._len}")
+                # print(f"Weights: {self.opt['weights']}")
                 seq.aux = aux
                 seq.plddt = aux["all"]["plddt"].mean(0)[self._target_len :]
                 
@@ -1193,8 +1258,9 @@ class _af_design:
                 if negative_model is not None:
                     if cycle_offset:
                         add_cyclic_offset(negative_model)
+                    negative_model.set_seq(seq.aa_seq)
                     aux_negative = negative_model.predict(
-                        seq.oh,
+                        seq.aa_seq,
                         return_aux=True,
                         verbose=False,
                         num_models=model_nums,
@@ -1238,8 +1304,12 @@ class _af_design:
                         print(f"On target fitness: {on_target_fitness:.3f}")
                     self.save_pdb(f"{experiment_name}/pdb/fitness{seq.fitness:.3f}_{seq.aa_seq}.pdb")
                 # update archive
-                archive.add_to_archive(seq)
-
+                added = archive.add_to_archive(seq)
+                if added:
+                    print(seq.seq_len, seq.aa_seq, seq.seq, f"Fitness: {seq.fitness:.3f} added to archive niche {added}")
+                    print(self.get_seqs()[0], self.get_seqs()[0] == seq.aa_seq, f" binder length {len(seq.seq)}, acutal {len(self.get_seqs()[0])}")
+                    self._save_best_niche_structure(seq, experiment_name)
+                
                 with open(f"{experiment_name}/all_seq.txt", "a") as f:
                     if negative_model is not None:
                         if gen == 0 and sidx == 0:
