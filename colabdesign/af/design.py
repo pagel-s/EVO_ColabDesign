@@ -1165,6 +1165,7 @@ class _af_design:
                         )
                         crossover_sequences.append(new_seq)
 
+                print("Using: ", len(mutated_sequences), " mutated sequences and ", len(crossover_sequences), " crossover sequences for a total of ", len(mutated_sequences) + len(crossover_sequences), " new sequences.")
                 for new_seq in mutated_sequences + crossover_sequences:
                     perc_hydrophob = np.mean(
                         [
@@ -1240,7 +1241,7 @@ class _af_design:
                     seq.aa_seq,
                     return_aux=True,
                     verbose=False,
-                    num_models=model_nums,
+                    num_models=1,
                     **kwargs,
                 )
                 print("Seq after predict ", self.get_seqs())
@@ -1306,11 +1307,11 @@ class _af_design:
                 # update archive
                 added = archive.add_to_archive(seq)
                 if added:
-                    print(seq.seq_len, seq.aa_seq, seq.seq, f"Fitness: {seq.fitness:.3f} added to archive niche {added}")
-                    print(self.get_seqs()[0], self.get_seqs()[0] == seq.aa_seq, f" binder length {len(seq.seq)}, acutal {len(self.get_seqs()[0])}")
                     self._save_best_niche_structure(seq, experiment_name)
+                print(seq.seq_len, seq.aa_seq, seq.seq, f"Fitness: {seq.fitness:.3f} added to archive niche {added}")
+                print(self.get_seqs()[0], self.get_seqs()[0] == seq.aa_seq, f" binder length {len(seq.seq)}, acutal {len(self.get_seqs()[0])}")
                 
-                with open(f"{experiment_name}/all_seq.txt", "a") as f:
+                with open(f"{experiment_name}/all_seq.csv", "a") as f:
                     if negative_model is not None:
                         if gen == 0 and sidx == 0:
                             f.write(
@@ -1331,7 +1332,7 @@ class _af_design:
                 # )
 
         # save final elites
-        with open(f"{experiment_name}/final_elites.txt", "w") as f:
+        with open(f"{experiment_name}/final_elites.csv", "w") as f:
             if negative_model is not None:
                 f.write("seq_len, aa_seq, fitness, loss, plddt, plddt_negative\n")
             else:

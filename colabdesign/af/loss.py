@@ -594,7 +594,7 @@ def add_helix_loss(self, weight=0):
         if mask_2d is None:
           helix_loss = jnp.diagonal(x,3).mean()
         else:
-          helix_loss = jnp.diagonal(x * mask_2d,3).sum() + (jnp.diagonal(mask_2d,3).sum() + 1e-8)
+          helix_loss = jnp.diagonal(x * mask_2d,3).sum() / (jnp.diagonal(mask_2d,3).sum() + 1e-8)
       else:
         mask = offset == 3
         if mask_2d is not None:
