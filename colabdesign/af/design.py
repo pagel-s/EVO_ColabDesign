@@ -180,7 +180,7 @@ class _af_design:
             out_dir,
             f"niche{niche_id}_fitness{seq_obj.fitness:.3f}_{seq_obj.aa_seq}.pdb",
         )
-        print("lengths: ", self._lengths, ". Binder length: ", self._binder_len)
+        # print("lengths: ", self._lengths, ". Binder length: ", self._binder_len)
         self.save_pdb(fname)
 
     # def _loss_breakdown(self, aux=None):
@@ -939,6 +939,67 @@ class _af_design:
     # design MAP-Elites
     # ---------------------------------------------------------------------------------
 
+    def random_sampling(self, archive, num_sequences=100, max_len=20, min_len=10):
+        sequences = []
+        filled_niches = []
+        
+        print(f"Archive has {archive.c.shape} niches")
+        for ridx in range(num_sequences * 10):
+            seq_len = np.random.randint(min_len, max_len + 1, 1)[0]
+            seq = sample_aas_by_category(seq_len, AA_mapping, return_indices=True)
+            assert len(seq) == seq_len, "ERROR: invalid sequence length"
+            
+            perc_hydrophob = np.mean(
+                [1 if AA_mapping[AA_idx[x]] == "hydrophob" else 0 for x in seq]
+            )
+            perc_polar = np.mean(
+                [1 if AA_mapping[AA_idx[x]] == "polar" else 0 for x in seq]
+            )
+            perc_charged = np.mean(
+                [1 if AA_mapping[AA_idx[x]] == "charged" else 0 for x in seq]
+            )
+            perc_other = np.mean(
+                [1 if AA_mapping[AA_idx[x]] == "other" else 0 for x in seq]
+            )
+            assert (
+                abs(
+                    (perc_hydrophob + perc_polar + perc_charged + perc_other)
+                    - 1
+                )
+                < 0.01
+            ), (
+                f"ERROR: invalid sequence properties {perc_hydrophob + perc_polar + perc_charged + perc_other}"
+            )
+
+
+            temp_seq = Sequence(
+                seq=seq,
+                perc_hydrophob=perc_hydrophob,
+                perc_polar=perc_polar,
+                perc_charged=perc_charged,
+                perc_other=perc_other,
+                seq_len=seq_len,
+                max_len=max_len,
+                min_len=min_len,
+            )
+            niche_id = archive.fits_in_archive(temp_seq)
+            if niche_id in filled_niches:
+                continue
+                # if len(sequences) < num_sequences:
+                #     # num_seq not reached, but not new niche
+                #     sequences.append(temp_seq)
+                #     continue
+                # else:
+                #     continue
+            else:
+                filled_niches.append(niche_id)
+            sequences.append(temp_seq)
+            if len(filled_niches) >= (archive.c.shape[0] / 2):
+                break
+        print(f"{len(filled_niches)} have been filled {len(list(set(filled_niches)))}")
+        print(filled_niches)
+        return sequences
+
     def _crossover(self, seq1, seq2, plddt1=None, plddt2=None, max_len=20, min_len=10):
       '''crossover between two sequences'''
       assert len(seq1) == len(plddt1), "ERROR: Sequence 1 and PLDDT 1 have different lengths"
@@ -998,6 +1059,7 @@ class _af_design:
         print("ERROR: invalid sequence length")   
       
       return sequence[:max_len]
+
 
     def design_mapelites(
         self,
@@ -1086,52 +1148,8 @@ class _af_design:
 
             # IF NOT INIT_ARCHIVE PROVIDED RANDOM SAMPLE INITIAL POPULATION OF SIZE num_sequences
             if gen == 0 and not init_archive:
-                sequences = []
-                while len(sequences) < num_sequences:
-                    seq_len = np.random.randint(min_len, max_len + 1, 1)[0]
-                    # seq = np.random.randint(0, self._args["alphabet_size"], seq_len)
-                    seq = sample_aas_by_category(seq_len, AA_mapping, return_indices=True)
-                    assert len(seq) == seq_len, "ERROR: invalid sequence length"
-                    print("New sequence: ", seq)
-                    
-                    perc_hydrophob = np.mean(
-                        [1 if AA_mapping[AA_idx[x]] == "hydrophob" else 0 for x in seq]
-                    )
-                    perc_polar = np.mean(
-                        [1 if AA_mapping[AA_idx[x]] == "polar" else 0 for x in seq]
-                    )
-                    perc_charged = np.mean(
-                        [1 if AA_mapping[AA_idx[x]] == "charged" else 0 for x in seq]
-                    )
-                    perc_other = np.mean(
-                        [1 if AA_mapping[AA_idx[x]] == "other" else 0 for x in seq]
-                    )
-                    assert (
-                        abs(
-                            (perc_hydrophob + perc_polar + perc_charged + perc_other)
-                            - 1
-                        )
-                        < 0.01
-                    ), (
-                        f"ERROR: invalid sequence properties {perc_hydrophob + perc_polar + perc_charged + perc_other}"
-                    )
+                sequences = self.random_sampling(archive=archive, num_sequences=num_sequences, max_len=max_len, min_len=min_len)
 
-                    seq_key = tuple(seq)
-                    if seq_key in archive:
-                        continue
-
-                    sequences.append(
-                        Sequence(
-                            seq=seq,
-                            perc_hydrophob=perc_hydrophob,
-                            perc_polar=perc_polar,
-                            perc_charged=perc_charged,
-                            perc_other=perc_other,
-                            seq_len=seq_len,
-                            max_len=max_len,
-                            min_len=min_len,
-                        )
-                    )
             # NEXT GENERATION PERFORM MUTATION AND CROSSOVER GIVEN ELITES
             elif gen > 0:
                 sequences = []
@@ -1212,7 +1230,7 @@ class _af_design:
 
             print(f"Number of sequences to evaluate: {len(sequences)}")
             for sidx, seq in track(enumerate(sequences), description=f"Evaluating sequences {len(sequences)}", total=len(sequences)):
-                print("#" * 20, f" sequence {sidx + 1}/{len(sequences)} ", "#" * 20)
+                # print("#" * 20, f" sequence {sidx + 1}/{len(sequences)} ", "#" * 20)
                 inputs_prep["binder_len"] = int(seq.seq_len)
                 # reinitialize pdb and set binder length
                 # _tmp = self._tmp
@@ -1236,7 +1254,6 @@ class _af_design:
                 if cycle_offset:
                     add_cyclic_offset(self)
                 # inside predict it set the sequence of the binder
-                print("Expected sequence: ", seq.aa_seq)
                 aux = self.predict(
                     seq.aa_seq,
                     return_aux=True,
@@ -1244,7 +1261,7 @@ class _af_design:
                     num_models=1,
                     **kwargs,
                 )
-                print("Seq after predict ", self.get_seqs())
+                # print("Seq after predict ", self.get_seqs())
                 # print("Model losses", self._callbacks["model"]["loss"])
                 # print(f"Sequence length: {self._len}")
                 # print(f"Weights: {self.opt['weights']}")
@@ -1308,8 +1325,8 @@ class _af_design:
                 added = archive.add_to_archive(seq)
                 if added:
                     self._save_best_niche_structure(seq, experiment_name)
-                print(seq.seq_len, seq.aa_seq, seq.seq, f"Fitness: {seq.fitness:.3f} added to archive niche {added}")
-                print(self.get_seqs()[0], self.get_seqs()[0] == seq.aa_seq, f" binder length {len(seq.seq)}, acutal {len(self.get_seqs()[0])}")
+                # print(seq.seq_len, seq.aa_seq, seq.seq, f"Fitness: {seq.fitness:.3f} added to archive niche {added}")
+                # print(self.get_seqs()[0], self.get_seqs()[0] == seq.aa_seq, f" binder length {len(seq.seq)}, acutal {len(self.get_seqs()[0])}")
                 
                 with open(f"{experiment_name}/all_seq.csv", "a") as f:
                     if negative_model is not None:

@@ -70,25 +70,41 @@ class Sequence:
     self.aa_seq = "".join([residue_constants.restypes[x] for x in self.seq])
     
 def sample_length(n, min_len=20, max_len=50):
-  return (np.random.choice(np.arange(min_len, max_len+1), n) - min_len) / (max_len - min_len)
+    return (np.random.choice(np.arange(min_len, max_len+1), n) - min_len) / (max_len - min_len)
+
+# def cvt(k, dim, samples, min_len=20, max_len=50):
+#     x = np.random.rand(samples, dim - 1)
+#     x = np.hstack((sample_length(samples, min_len=min_len, max_len=max_len).reshape(-1, 1), x))
+#     print("CVT input shape:", x.shape)
+#     k_means = KMeans(init='k-means++', n_clusters=k, n_init="auto", verbose=0)
+#     k_means.fit(x)
+#     return k_means.cluster_centers_
 
 def cvt(k, dim, samples, min_len=20, max_len=50):
-    x = np.random.rand(samples, dim -1)
-    x = np.hstack((sample_length(samples, min_len=min_len, max_len=max_len).reshape(-1,1), x))
-    print("CVT input shape:", x.shape)
-    k_means = KMeans(init='k-means++', n_clusters=k,
-                     n_init="auto", verbose=0)
+    n_cuts = dim - 2
+
+    u = np.random.rand(samples, n_cuts)
+    u.sort(axis=1)
+    
+    u_with_bounds = np.hstack((np.zeros((samples, 1)), u, np.ones((samples, 1))))
+    
+    percentages = np.diff(u_with_bounds, axis=1)
+
+    length_dim = sample_length(samples, min_len=min_len, max_len=max_len).reshape(-1, 1)
+
+    x = np.hstack((length_dim, percentages))
+    print("CVT input shape:", x.shape) 
+    k_means = KMeans(init='k-means++', n_clusters=k, n_init="auto", verbose=0)
     k_means.fit(x)
     return k_means.cluster_centers_
 
 def create_cvt(n_niches, dim_map, samples, min_len=20, max_len=50):
-    c = cvt(n_niches, dim_map,
-              samples, min_len=min_len, max_len=max_len)
+    c = cvt(n_niches, dim_map, samples, min_len=min_len, max_len=max_len)
     kdt = KDTree(c, leaf_size=30, metric='euclidean')
     return c, kdt
 
 class Archive:
-  def __init__(self, archive_dims, niches=500, samples=25_000, min_len=20, max_len=50):
+  def __init__(self, archive_dims, niches=500, samples=75_000, min_len=20, max_len=50):
     self.archive = {}
     self.archive_dims = archive_dims
     self.c, self.kdt = create_cvt(niches, archive_dims, samples, min_len=min_len, max_len=max_len)
@@ -97,7 +113,7 @@ class Archive:
     added = False
     seq_key = tuple(seq.seq)
     if seq_key in self.archive:
-      return
+      return added
     
     niche_dist = distance.cdist(self.c, [seq.feature_vector], 'euclidean')
     niche_id = np.argmin(niche_dist)
@@ -112,6 +128,22 @@ class Archive:
       self.archive[centroid] = seq
       added = True
     return added
+  
+  def fits_in_archive(self, seq: Sequence):
+    
+    seq_key = tuple(seq.seq)
+    if seq_key in self.archive:
+      return -1
+    
+    print("C: ", self.c.shape, "Features :", seq.feature_vector)
+    niche_dist = distance.cdist(self.c, [seq.feature_vector], 'euclidean')
+    niche_id = np.argmin(niche_dist)
+    niche = self.c[niche_id]
+    centroid = self.kdt.query([niche])[1][0][0]
+    
+    if centroid not in self.archive:
+      return niche_id
+    return -1
   
   def __contains__(self, key: tuple):
     if len(self.archive) == 0:
