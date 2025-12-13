@@ -11,26 +11,26 @@ from colabdesign.af.alphafold.common import residue_constants
 ### AminoAcid level archive
 
 AA_mapping = {
+    "G": "hydrophob",
     "A": "hydrophob",
     "V": "hydrophob",
-    "I": "hydrophob",
     "L": "hydrophob",
+    "I": "hydrophob",
+    "P": "hydrophob",
     "M": "hydrophob",
-    "F": "hydrophob",
-    "Y": "hydrophob",
-    "W": "hydrophob",
-    "S": "polar",
-    "T": "polar",
-    "N": "polar",
-    "Q": "polar",
-    "H": "charged",
-    "K": "charged",
-    "R": "charged",
-    "D": "charged",
-    "E": "charged",
-    "C": "other",
-    "G": "other",
-    "P": "other"
+    "F": "hydrophob_aromatic",
+    "Y": "hydrophob_aromatic",
+    "W": "hydrophob_aromatic",
+    "S": "hydrophil",
+    "T": "hydrophil",
+    "C": "hydrophil",
+    "N": "hydrophil",
+    "Q": "hydrophil",
+    "D": "hydrophil_acidic",
+    "E": "hydrophil_acidic",
+    "R": "hydrophil_basic",
+    "H": "hydrophil_basic",
+    "K": "hydrophil_basic",
 }
 
 
@@ -41,20 +41,59 @@ AA_idx = {
 archive_dims = {
     "seq_len": 0,
     "perc_hydrophob": 1,
-    "perc_polar": 2,
-    "perc_charged": 3,
-    "perc_other": 4,
+    "perc_hydrophob_aromatic": 2,
+    "perc_hydrophil": 3,
+    "perc_hydrophil_acidic": 4,
+    "perc_hydrophil_basic": 5
 }
 
 ### Utilities for MAP-Elites archive
+def compute_aa_composition(seq):
+    n_residues = len(seq)
+    counts = {
+        "hydrophob": 0,
+        "hydrophob_aromatic": 0,
+        "hydrophil": 0,
+        "hydrophil_acidic": 0,
+        "hydrophil_basic": 0
+    }
+    for res_idx in seq:
+        aa = residue_constants.restypes[res_idx]
+        category = AA_mapping.get(aa, None)
+        if category:
+            counts[category] += 1
+    perc_hydrophob = counts["hydrophob"] / n_residues
+    perc_hydrophob_aromatic = counts["hydrophob_aromatic"] / n_residues
+    perc_hydrophil = counts["hydrophil"] / n_residues
+    perc_hydrophil_acidic = counts["hydrophil_acidic"] / n_residues
+    perc_hydrophil_basic = counts["hydrophil_basic"] / n_residues
+    return perc_hydrophob, perc_hydrophob_aromatic, perc_hydrophil, perc_hydrophil_acidic, perc_hydrophil_basic
+
+
+def prepare_sequence(seq, min_len=20, max_len=50):
+    seq_len = len(seq)
+    perc_hydrophob, perc_hydrophob_aromatic, perc_hydrophil, perc_hydrophil_acidic, perc_hydrophil_basic = compute_aa_composition(seq)
+    sequence = Sequence(
+        seq=seq,
+        perc_hydrophob=perc_hydrophob,
+        perc_hydrophob_aromatic=perc_hydrophob_aromatic,
+        perc_hydrophil=perc_hydrophil,
+        perc_hydrophil_acidic=perc_hydrophil_acidic,
+        perc_hydrophil_basic=perc_hydrophil_basic,
+        seq_len=seq_len,
+        min_len=min_len,
+        max_len=max_len
+    )
+    return sequence
 
 @dataclass
 class Sequence:
   seq: list
   perc_hydrophob: float
-  perc_polar: float
-  perc_charged: float
-  perc_other: float
+  perc_hydrophob_aromatic: float
+  perc_hydrophil: float
+  perc_hydrophil_acidic: float
+  perc_hydrophil_basic: float
   seq_len: int
   loss: float = 0.0
   feature_vector: np.ndarray = None
@@ -66,7 +105,7 @@ class Sequence:
   niche_id: int = None
   
   def __post_init__(self):
-    self.feature_vector = np.array([(self.seq_len - self.min_len)/ (self.max_len - self.min_len), self.perc_hydrophob, self.perc_polar, self.perc_charged, self.perc_other])
+    self.feature_vector = np.array([(self.seq_len - self.min_len)/ (self.max_len - self.min_len), self.perc_hydrophob, self.perc_hydrophob_aromatic, self.perc_hydrophil, self.perc_hydrophil_acidic, self.perc_hydrophil_basic])
     self.aa_seq = "".join([residue_constants.restypes[x] for x in self.seq])
     
 def sample_length(n, min_len=20, max_len=50):
@@ -108,6 +147,7 @@ class Archive:
     self.archive = {}
     self.archive_dims = archive_dims
     self.c, self.kdt = create_cvt(niches, archive_dims, samples, min_len=min_len, max_len=max_len)
+    self.observed_sequences = set()
 
   def add_to_archive(self, seq: Sequence):
     added = False
@@ -135,7 +175,6 @@ class Archive:
     if seq_key in self.archive:
       return -1
     
-    print("C: ", self.c.shape, "Features :", seq.feature_vector)
     niche_dist = distance.cdist(self.c, [seq.feature_vector], 'euclidean')
     niche_id = np.argmin(niche_dist)
     niche = self.c[niche_id]

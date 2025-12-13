@@ -10,7 +10,7 @@ from rich import print
 from colabdesign.af.alphafold.common import residue_constants
 from colabdesign.af.alphafold.common.cyclic_offset import add_cyclic_offset
 from colabdesign.shared.utils import copy_dict, update_dict, Key, dict_to_str, to_float, softmax, categorical, to_list, copy_missing
-from colabdesign.af.mapelites_utils import Archive, Sequence, AA_mapping, archive_dims, AA_idx, sample_aas_by_category
+from colabdesign.af.mapelites_utils import Archive, Sequence, AA_mapping, archive_dims, AA_idx, sample_aas_by_category, prepare_sequence
 from colabdesign.af.model_prep import set_up_model
 
 import json
@@ -943,45 +943,12 @@ class _af_design:
         sequences = []
         filled_niches = []
         
-        print(f"Archive has {archive.c.shape} niches")
         for ridx in range(num_sequences * 10):
             seq_len = np.random.randint(min_len, max_len + 1, 1)[0]
             seq = sample_aas_by_category(seq_len, AA_mapping, return_indices=True)
             assert len(seq) == seq_len, "ERROR: invalid sequence length"
             
-            perc_hydrophob = np.mean(
-                [1 if AA_mapping[AA_idx[x]] == "hydrophob" else 0 for x in seq]
-            )
-            perc_polar = np.mean(
-                [1 if AA_mapping[AA_idx[x]] == "polar" else 0 for x in seq]
-            )
-            perc_charged = np.mean(
-                [1 if AA_mapping[AA_idx[x]] == "charged" else 0 for x in seq]
-            )
-            perc_other = np.mean(
-                [1 if AA_mapping[AA_idx[x]] == "other" else 0 for x in seq]
-            )
-            assert (
-                abs(
-                    (perc_hydrophob + perc_polar + perc_charged + perc_other)
-                    - 1
-                )
-                < 0.01
-            ), (
-                f"ERROR: invalid sequence properties {perc_hydrophob + perc_polar + perc_charged + perc_other}"
-            )
-
-
-            temp_seq = Sequence(
-                seq=seq,
-                perc_hydrophob=perc_hydrophob,
-                perc_polar=perc_polar,
-                perc_charged=perc_charged,
-                perc_other=perc_other,
-                seq_len=seq_len,
-                max_len=max_len,
-                min_len=min_len,
-            )
+            temp_seq = prepare_sequence(seq, min_len=min_len, max_len=max_len)
             niche_id = archive.fits_in_archive(temp_seq)
             if niche_id in filled_niches:
                 continue
@@ -997,7 +964,6 @@ class _af_design:
             if len(filled_niches) >= (archive.c.shape[0] / 2):
                 break
         print(f"{len(filled_niches)} have been filled {len(list(set(filled_niches)))}")
-        print(filled_niches)
         return sequences
 
     def _crossover(self, seq1, seq2, plddt1=None, plddt2=None, max_len=20, min_len=10):
@@ -1060,6 +1026,73 @@ class _af_design:
       
       return sequence[:max_len]
 
+    def _crossover_one_chunk(self, seq1, seq2, plddt1=None, plddt2=None, max_len=20, min_len=10):
+        """Crossover that swaps at most one chunk. Selects a random matching seq2 chunk
+        whose mean pLDDT is greater than the seq1 chunk mean. Otherwise keeps seq1 chunk.
+        Returns sequence truncated to max_len (same asserts as _crossover)."""
+        assert len(seq1) == len(plddt1), "ERROR: Sequence 1 and PLDDT 1 have different lengths"
+        assert len(seq2) == len(plddt2), "ERROR: Sequence 2 and PLDDT 2 have different lengths"
+
+        def _chunks_sizes(seq):
+            chunks = []
+            chunk_range = [2, 6]
+            cumsum = len(seq)
+            while cumsum > 0:
+                chunk_size = np.random.randint(chunk_range[0], chunk_range[1])
+                chunk_size = min(chunk_size, cumsum)
+                chunks.append(chunk_size)
+                cumsum -= chunk_size
+            return chunks
+
+        seq1 = np.array(seq1)
+        seq2 = np.array(seq2)
+
+        chunks1 = _chunks_sizes(seq1)
+        chunks2 = _chunks_sizes(seq2)
+
+        seq1_chunks = np.split(seq1, np.cumsum(chunks1))
+        plddt1_chunks = np.split(np.array(plddt1), np.cumsum(chunks1))
+
+        seq2_chunks = np.split(seq2, np.cumsum(chunks2))
+        plddt2_chunks = np.split(np.array(plddt2), np.cumsum(chunks2))
+
+        if len(seq1_chunks) and seq1_chunks[-1].size == 0:
+            seq1_chunks.pop(); plddt1_chunks.pop()
+        if len(seq2_chunks) and seq2_chunks[-1].size == 0:
+            seq2_chunks.pop(); plddt2_chunks.pop()
+
+        sequence = []
+        swap_done = False
+
+        for i in range(len(seq1_chunks)):
+            if len(seq2_chunks) == 0:
+                for subl in seq1_chunks[i:]:
+                    sequence.extend(subl)
+                break
+
+            mean1 = float(np.mean(plddt1_chunks[i]))
+            matching_idxs = [j for j in range(len(plddt2_chunks)) if float(np.mean(plddt2_chunks[j])) > mean1]
+
+            if (not swap_done) and matching_idxs:
+                j = int(np.random.choice(matching_idxs))
+                sequence.extend(seq2_chunks.pop(j))
+                plddt2_chunks.pop(j)
+                swap_done = True
+            else:
+                # keep seq1 chunk
+                sequence.extend(seq1_chunks[i])
+
+        if len(sequence) < min_len:
+            if len(seq2_chunks) > 0:
+                for subl in seq2_chunks:
+                    sequence.extend(subl)
+            else:
+                sequence.extend(np.random.randint(0, self._args["alphabet_size"], min_len - len(sequence)))
+
+        if len(sequence) < min_len:
+            print("ERROR: invalid sequence length")
+
+        return sequence[:max_len]
 
     def design_mapelites(
         self,
@@ -1105,34 +1138,14 @@ class _af_design:
             for seq in init_archive:
                 seq = [residue_constants.restypes.index(x) for x in seq]
 
-                perc_hydrophob = np.mean(
-                    [1 if AA_mapping[AA_idx[x]] == "hydrophob" else 0 for x in seq]
-                )
-                perc_polar = np.mean(
-                    [1 if AA_mapping[AA_idx[x]] == "polar" else 0 for x in seq]
-                )
-                perc_charged = np.mean(
-                    [1 if AA_mapping[AA_idx[x]] == "charged" else 0 for x in seq]
-                )
-                perc_other = np.mean(
-                    [1 if AA_mapping[AA_idx[x]] == "other" else 0 for x in seq]
-                )
-                assert (
-                    abs((perc_hydrophob + perc_polar + perc_charged + perc_other) - 1)
-                    < 0.01
-                ), "ERROR: invalid sequence properties"
+                new_seq = prepare_sequence(seq, min_len=min_len, max_len=max_len)
 
+                if tuple(seq) not in archive.observed_sequences:
+                    seq_key = tuple(seq)
+                    archive.observed_sequences.add(seq_key)
+                
                 sequences.append(
-                    Sequence(
-                        seq=seq,
-                        perc_hydrophob=perc_hydrophob,
-                        perc_polar=perc_polar,
-                        perc_charged=perc_charged,
-                        perc_other=perc_other,
-                        seq_len=len(seq),
-                        max_len=max_len,
-                        min_len=min_len,
-                    )
+                    new_seq
                 )
             print(f"Initialized archive with {len(archive)} sequences")
 
@@ -1149,6 +1162,9 @@ class _af_design:
             # IF NOT INIT_ARCHIVE PROVIDED RANDOM SAMPLE INITIAL POPULATION OF SIZE num_sequences
             if gen == 0 and not init_archive:
                 sequences = self.random_sampling(archive=archive, num_sequences=num_sequences, max_len=max_len, min_len=min_len)
+                for seq in sequences:
+                    seq_key = tuple(seq.seq)
+                    archive.observed_sequences.add(seq_key)
 
             # NEXT GENERATION PERFORM MUTATION AND CROSSOVER GIVEN ELITES
             elif gen > 0:
@@ -1173,7 +1189,7 @@ class _af_design:
                             archive.elites[:eli] + archive.elites[eli + 1 :]
                         )
 
-                        new_seq = self._crossover(
+                        new_seq = self._crossover_one_chunk(
                             seq1.seq,
                             seq2.seq,
                             plddt1=seq1.plddt,
@@ -1183,49 +1199,18 @@ class _af_design:
                         )
                         crossover_sequences.append(new_seq)
 
-                print("Using: ", len(mutated_sequences), " mutated sequences and ", len(crossover_sequences), " crossover sequences for a total of ", len(mutated_sequences) + len(crossover_sequences), " new sequences.")
                 for new_seq in mutated_sequences + crossover_sequences:
-                    perc_hydrophob = np.mean(
-                        [
-                            1 if AA_mapping[AA_idx[x]] == "hydrophob" else 0
-                            for x in new_seq
-                        ]
-                    )
-                    perc_polar = np.mean(
-                        [1 if AA_mapping[AA_idx[x]] == "polar" else 0 for x in new_seq]
-                    )
-                    perc_charged = np.mean(
-                        [
-                            1 if AA_mapping[AA_idx[x]] == "charged" else 0
-                            for x in new_seq
-                        ]
-                    )
-                    perc_other = np.mean(
-                        [1 if AA_mapping[AA_idx[x]] == "other" else 0 for x in new_seq]
-                    )
-                    assert (
-                        abs(
-                            (perc_hydrophob + perc_polar + perc_charged + perc_other)
-                            - 1
-                        )
-                        < 0.01
-                    ), "ERROR: invalid sequence properties"
 
                     seq_key = tuple(new_seq)
-                    if seq_key in archive:
+                    new_seq_obj = prepare_sequence(new_seq, min_len=min_len, max_len=max_len)
+                    
+                    if seq_key in archive.observed_sequences:
                         continue
+                    else:
+                        archive.observed_sequences.add(seq_key)
 
                     sequences.append(
-                        Sequence(
-                            seq=new_seq,
-                            perc_hydrophob=perc_hydrophob,
-                            perc_polar=perc_polar,
-                            perc_charged=perc_charged,
-                            perc_other=perc_other,
-                            seq_len=len(new_seq),
-                            max_len=max_len,
-                            min_len=min_len,
-                        )
+                        new_seq_obj
                     )
 
             print(f"Number of sequences to evaluate: {len(sequences)}")
@@ -1261,17 +1246,11 @@ class _af_design:
                     num_models=1,
                     **kwargs,
                 )
-                # print("Seq after predict ", self.get_seqs())
-                # print("Model losses", self._callbacks["model"]["loss"])
-                # print(f"Sequence length: {self._len}")
-                # print(f"Weights: {self.opt['weights']}")
+                print("Losses: ", aux["losses"])
                 seq.aux = aux
                 seq.plddt = aux["all"]["plddt"].mean(0)[self._target_len :]
                 
                 on_target_fitness = -aux["log"]["loss"]
-                # on_target_fitness = np.mean(
-                #     aux["all"]["plddt"].mean(0)[self._target_len :]
-                # )
 
                 if negative_model is not None:
                     if cycle_offset:
@@ -1290,11 +1269,6 @@ class _af_design:
                     ]
                     
                     off_target_fitness = -aux_negative["log"]["loss"]
-                    # off_target_fitness = np.mean(
-                    #     aux_negative["all"]["plddt"].mean(0)[
-                    #         negative_model._target_len :
-                    #     ]
-                    # )
 
                     seq.fitness = (
                         on_target_fitness + (on_target_fitness - off_target_fitness)
@@ -1332,16 +1306,16 @@ class _af_design:
                     if negative_model is not None:
                         if gen == 0 and sidx == 0:
                             f.write(
-                                "seq_len, aa_seq, fitness, loss, plddt, plddt_negative\n"
+                                "gen_id, niche_id, seq_len, aa_seq, fitness, loss, plddt, plddt_negative\n"
                             )
                         f.write(
-                            f"{seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}, {np.mean(seq.plddt_negative)}\n"
+                            f"{gen}, {seq.niche_id}, {seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}, {np.mean(seq.plddt_negative)}\n"
                         )
                     else:
                         if gen == 0 and sidx == 0:
-                            f.write("seq_len, aa_seq, fitness, loss, plddt\n")
+                            f.write("gen_id, niche_id, seq_len, aa_seq, fitness, loss, plddt\n")
                         f.write(
-                            f"{seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}\n"
+                            f"{gen}, {seq.niche_id}, {seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}\n"
                         )
                 # self._append_jsonl(
                 #     f"{experiment_name}/all_seq.jsonl",
@@ -1351,18 +1325,18 @@ class _af_design:
         # save final elites
         with open(f"{experiment_name}/final_elites.csv", "w") as f:
             if negative_model is not None:
-                f.write("seq_len, aa_seq, fitness, loss, plddt, plddt_negative\n")
+                f.write("gen_id, seq_len, aa_seq, fitness, loss, plddt, plddt_negative\n")
             else:
-                f.write("seq_len, aa_seq, fitness, loss, plddt\n")
+                f.write("gen_id, seq_len, aa_seq, fitness, loss, plddt\n")
 
             for seq in archive.elites:
                 if negative_model is not None:
                     f.write(
-                        f"{seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}, {np.mean(seq.plddt_negative)}\n"
+                        f"{gen}, {seq.niche_id}, {seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}, {np.mean(seq.plddt_negative)}\n"
                     )
                 else:
                     f.write(
-                        f"{seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}\n"
+                        f"{gen}, {seq.niche_id}, {seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}\n"
                     )
         # for seq in archive.elites:
         #     self._append_jsonl(
