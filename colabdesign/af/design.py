@@ -156,6 +156,28 @@ class _af_design:
         with open(path, "a") as f:
             f.write(json.dumps(obj) + "\n")
 
+    def write_to_file(
+        self, seq, aux, fname, gen, contrastive=False, aux_negative=None, init=False
+    ):
+        with open(fname, "a") as f:
+            if contrastive:
+                columns = f"gen_id, niche_id, seq_len, aa_seq, fitness, loss, plddt_val, plddt_negative, {', '.join(aux['losses'].keys())}, cont_{', cont_'.join(aux_negative['losses'].keys())}\n"
+
+                if init:
+                    f.write(columns)
+                else:
+                    f.write(
+                        f"{gen}, {seq.niche_id}, {seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}, {np.mean(seq.plddt_negative)}, {', '.join(str(aux['losses'][k]) for k in aux['losses'].keys())}, {', '.join(str(aux_negative['losses'][k]) for k in aux_negative['losses'].keys())}\n"
+                    )
+            else:
+                columns = f"gen_id, niche_id, seq_len, aa_seq, fitness, loss, plddt_val, {', '.join(aux['losses'].keys())}\n"
+                if init:
+                    f.write(columns)
+                else:
+                    f.write(
+                        f"{gen}, {seq.niche_id}, {seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}, {', '.join(str(aux['losses'][k]) for k in aux['losses'].keys())}\n"
+                    )
+
     def _save_best_niche_structure(self, seq_obj, experiment_name):
         """
         Save the current best structure for this niche (seq_obj.niche_id),
@@ -180,7 +202,6 @@ class _af_design:
             out_dir,
             f"niche{niche_id}_fitness{seq_obj.fitness:.3f}_{seq_obj.aa_seq}.pdb",
         )
-        # print("lengths: ", self._lengths, ". Binder length: ", self._binder_len)
         self.save_pdb(fname)
 
     # def _loss_breakdown(self, aux=None):
@@ -1125,7 +1146,8 @@ class _af_design:
         }
         print("Models nums are:", self._get_model_nums(**model_flags))
         model_nums = self._get_model_nums(**model_flags)
-
+        aux_negative = None
+        log_fname = f"{experiment_name}/all_seq.csv"
 
         archive = Archive(archive_dims=len(archive_dims), min_len=min_len, max_len=max_len, niches=num_elites)
         init_archive = kwargs.pop("init_archive", [])
@@ -1185,9 +1207,13 @@ class _af_design:
                 if len(archive.elites) > 1:
                     for eli in range(len(archive.elites)):
                         seq1 = archive.elites[eli]
-                        seq2 = random.choice(
-                            archive.elites[:eli] + archive.elites[eli + 1 :]
-                        )
+                        
+                        seq2 = archive.select_sequence_within_top_n(sequence=seq1, n=10)
+                        if seq2 is None:
+                            print("No better sequence found for crossover, selecting random sequence")
+                            seq2 = random.choice(
+                                archive.elites[:eli] + archive.elites[eli + 1 :]
+                            )
 
                         new_seq = self._crossover_one_chunk(
                             seq1.seq,
@@ -1232,8 +1258,6 @@ class _af_design:
                     set_up_model(negative_model, negative_inputs, add_adv_losses=True, add_prep_inputs=False, add_prep_model=True)
                     negative_model._tmp = _tmp
                 
-                # onehot encode sequence
-                # seq.oh = np.eye(self._args["alphabet_size"])[seq.seq]
                 assert seq.seq_len == len(seq.seq), f"ERROR: sequence length mismatch {seq.seq_len}, {seq.seq}"
 
                 if cycle_offset:
@@ -1246,7 +1270,6 @@ class _af_design:
                     num_models=1,
                     **kwargs,
                 )
-                print("Losses: ", aux["losses"])
                 seq.aux = aux
                 seq.plddt = aux["all"]["plddt"].mean(0)[self._target_len :]
                 
@@ -1299,28 +1322,12 @@ class _af_design:
                 added = archive.add_to_archive(seq)
                 if added:
                     self._save_best_niche_structure(seq, experiment_name)
-                # print(seq.seq_len, seq.aa_seq, seq.seq, f"Fitness: {seq.fitness:.3f} added to archive niche {added}")
-                # print(self.get_seqs()[0], self.get_seqs()[0] == seq.aa_seq, f" binder length {len(seq.seq)}, acutal {len(self.get_seqs()[0])}")
-                
-                with open(f"{experiment_name}/all_seq.csv", "a") as f:
-                    if negative_model is not None:
-                        if gen == 0 and sidx == 0:
-                            f.write(
-                                "gen_id, niche_id, seq_len, aa_seq, fitness, loss, plddt, plddt_negative\n"
-                            )
-                        f.write(
-                            f"{gen}, {seq.niche_id}, {seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}, {np.mean(seq.plddt_negative)}\n"
-                        )
-                    else:
-                        if gen == 0 and sidx == 0:
-                            f.write("gen_id, niche_id, seq_len, aa_seq, fitness, loss, plddt\n")
-                        f.write(
-                            f"{gen}, {seq.niche_id}, {seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}\n"
-                        )
-                # self._append_jsonl(
-                #     f"{experiment_name}/all_seq.jsonl",
-                #     self._make_log_entry(seq, aux, gen, aux_negative if negative_model is not None else None),
-                # )
+
+                if gen == 0 and sidx == 0:
+                    self.write_to_file(seq=None, aux=self.aux, gen=None, fname=log_fname, aux_negative=aux_negative, contrastive=negative_model is not None, init=True)
+                    self.write_to_file(seq=seq, aux=self.aux, gen=gen, fname=log_fname, aux_negative=aux_negative, contrastive=negative_model is not None)
+                else:
+                    self.write_to_file(seq=seq, aux=self.aux, gen=gen, fname=log_fname, aux_negative=aux_negative, contrastive=negative_model is not None)
 
         # save final elites
         with open(f"{experiment_name}/final_elites.csv", "w") as f:
@@ -1338,11 +1345,6 @@ class _af_design:
                     f.write(
                         f"{gen}, {seq.niche_id}, {seq.seq_len}, {seq.aa_seq}, {seq.fitness}, {seq.loss}, {np.mean(seq.plddt)}\n"
                     )
-        # for seq in archive.elites:
-        #     self._append_jsonl(
-        #         f"{experiment_name}/final_elites.jsonl",
-        #         self._make_log_entry(seq, seq.aux, gen, getattr(seq, "aux_negative", None) if negative_model is not None else None),
-        #     )
 
         msg = (
             f"Final Generation,\n"
