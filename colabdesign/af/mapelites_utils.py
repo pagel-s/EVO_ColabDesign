@@ -204,11 +204,27 @@ class Archive:
   @property
   def elites(self):
     return list(self.archive.values())
-
-
+  
+  def select_sequence_within_top_n(self, sequence, n=10):
+    """Given one sequence, select one random other within n closest elites in feature space.
+    Closest is defined by Euclidean distance in feature space of niche centroids.
+    """
+    seq_niche_id = sequence.niche_id
+    if seq_niche_id is None:
+      raise ValueError("Input sequence must have niche_id defined.")
+    seq_niche_centroid = self.c[seq_niche_id]
+    elite_centroid_ids = np.array(list(self.archive.keys()))
+    elite_centroids = self.c[elite_centroid_ids]
+    dists = distance.cdist([seq_niche_centroid], elite_centroids, 'euclidean')[0]
+    sorted_indices = np.argsort(dists)
+    top_n_indices = sorted_indices[1:n+1]  # exclude the first one which is the sequence itself
+    if len(top_n_indices) == 0:
+        return None
+    chosen_index = np.random.choice(top_n_indices)
+    chosen_centroid_id = elite_centroid_ids[chosen_index]
+    return self.archive[chosen_centroid_id]
 
 ### SAMPLING
-
 def sample_aas_by_category(n, aa_to_cat, category_probs=None, rng=None, return_indices=True):
     """
     Sample n amino acids where each category has equal probability (by default),
