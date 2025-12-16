@@ -15,7 +15,6 @@ import json
 import math
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
