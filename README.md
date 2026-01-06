@@ -1,3 +1,16 @@
+If you get an OpenBLAS eorrr:
+```fish
+set -x OPENBLAS_NUM_THREADS 1
+set -x OMP_NUM_THREADS 1
+set -x MKL_NUM_THREADS 
+```
+
+```bash
+export OPENBLAS_NUM_THREADS=1
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=
+```
+
 # ColabDesign
 ### Making Protein Design accessible to all via Google Colab! 
 - P(structure | sequence)
