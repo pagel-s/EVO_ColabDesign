@@ -161,6 +161,7 @@ def run_binder_design(
     target_hotspot_residues=None,
     experiment_folder="binder_mapelites",
     helicity_value=0.5,
+    cyclic_offset=False,
 ):
     """Binder design"""
     print("\n" + "=" * 60)
@@ -184,16 +185,6 @@ def run_binder_design(
         num_recycles=advanced_settings.get("num_recycles", 3),
         best_metric="loss",
     )
-    # af_model.prep_inputs(
-    #     pdb_filename=pdb_file,
-    #     chain=chain,
-    #     binder_len=length,
-    #     hotspot=target_hotspot_residues,
-    #     seed=seed,
-    #     rm_aa=advanced_settings["omit_AAs"],
-    #     rm_target_seq=advanced_settings["rm_template_seq_design"],
-    #     rm_target_sc=advanced_settings["rm_template_sc_design"],
-    # )
 
     inputs_prep = prepare_inputs(
         starting_pdb=pdb_file,
@@ -203,17 +194,6 @@ def run_binder_design(
         seed=seed,
         advanced_settings=advanced_settings,
     )
-        
-    
-    # af_model.opt["weights"].update({"pae":advanced_settings["weights_pae_intra"],
-    #                                 "plddt":advanced_settings["weights_plddt"],
-    #                                 "i_pae":advanced_settings["weights_pae_inter"],
-    #                                 "con":advanced_settings["weights_con_intra"],
-    #                                 "i_con":advanced_settings["weights_con_inter"],
-    #                                 })
-
-    # af_model.opt["con"].update({"num":advanced_settings["intra_contact_number"],"cutoff":advanced_settings["intra_contact_distance"],"binary":False,"seqsep":9})
-    # af_model.opt["i_con"].update({"num":advanced_settings["inter_contact_number"],"cutoff":advanced_settings["inter_contact_distance"],"binary":False})
 
     if contrastive_pdb is not None:
         af_model_contrastive = mk_afdesign_model(
@@ -234,29 +214,7 @@ def run_binder_design(
             advanced_settings=advanced_settings,
         )
 
-        # af_model_contrastive.prep_inputs(
-        #     pdb_filename=contrastive_pdb,
-        #     chain=contrastive_chain,
-        #     binder_len=length,
-        #     hotspot=contrastive_target_hotspot_residues,
-        #     seed=seed,
-        #     rm_aa=advanced_settings["omit_AAs"],
-        #     rm_target_seq=advanced_settings["rm_template_seq_design"],
-        #     rm_target_sc=advanced_settings["rm_template_sc_design"],
-        # )
-        
-        # prepare_model(af_model_contrastive, contrastive_inputs["model_prep"])
-        
-        # af_model_contrastive.opt["weights"].update({"pae":advanced_settings["weights_pae_intra"],
-        #                                 "plddt":advanced_settings["weights_plddt"],
-        #                                 "i_pae":advanced_settings["weights_pae_inter"],
-        #                                 "con":advanced_settings["weights_con_intra"],
-        #                                 "i_con":advanced_settings["weights_con_inter"],
-        #                                 })
-        
-        # af_model_contrastive.opt["con"].update({"num":advanced_settings["intra_contact_number"],"cutoff":advanced_settings["intra_contact_distance"],"binary":False,"seqsep":9})
-        # af_model_contrastive.opt["i_con"].update({"num":advanced_settings["inter_contact_number"],"cutoff":advanced_settings["inter_contact_distance"],"binary":False})
-        
+
     # add_losses(af_model, inputs_prep)
     set_up_model(af_model, inputs_prep)
     if af_model_contrastive is not None:
@@ -323,6 +281,7 @@ def run_binder_design(
             verbose=verbose,
             negative_model=af_model_contrastive,
             negative_inputs=contrastive_inputs,
+            cycle_offset=cyclic_offset,
             mutation_rate=mutation_rate, # will be recalculated inside function for each binder of varying length
             num_models=1
         )
@@ -372,171 +331,6 @@ Examples:
         help="Path to JSON configuration file with design parameters.",
     )
 
-    # parser.add_argument(
-    #     "--protocol",
-    #     type=str,
-    #     default="binder",
-    #     choices=["binder", "hallucination"],
-    #     help="Design protocol to use (default: binder)"
-    # )
-
-    # parser.add_argument(
-    #     "--pdb",
-    #     type=str,
-    #     default="1TEN",
-    #     help="PDB file or PDB code (4-letter RCSB code or AlphaFold ID). Required for fixbb. (default: 1TEN)"
-    # )
-
-    # parser.add_argument(
-    #     "--chain",
-    #     type=str,
-    #     default="A",
-    #     help="Chain to design (fixbb only, default: A)"
-    # )
-
-    # parser.add_argument(
-    #     "--length",
-    #     type=int,
-    #     default=100,
-    #     help="Target sequence length for hallucination (default: 100)"
-    # )
-
-    # parser.add_argument(
-    #     "--method",
-    #     type=str,
-    #     default="3stage",
-    #     choices=["3stage", "hard", "soft", "logits", "mcmc", "mapelites", "semigreedy"],
-    #     help="Design method (default: 3stage)"
-    # )
-
-    # parser.add_argument(
-    #     "--iters",
-    #     type=int,
-    #     default=100,
-    #     help="Number of iterations for single-stage designs (default: 100)"
-    # )
-
-    # parser.add_argument(
-    #     "--soft-iters",
-    #     type=int,
-    #     default=50,
-    #     help="Iterations for soft stage in 3-stage design (default: 50)"
-    # )
-
-    # parser.add_argument(
-    #     "--temp-iters",
-    #     type=int,
-    #     default=50,
-    #     help="Iterations for temperature stage in 3-stage design (default: 50)"
-    # )
-
-    # parser.add_argument(
-    #     "--hard-iters",
-    #     type=int,
-    #     default=10,
-    #     help="Iterations for hard stage in 3-stage design (default: 10)"
-    # )
-
-    # parser.add_argument(
-    #     "--verbose",
-    #     type=int,
-    #     default=1,
-    #     help="Verbosity level (default: 1)"
-    # )
-
-    # # MCMC parameters
-    # parser.add_argument(
-    #     "--mcmc-steps",
-    #     type=int,
-    #     default=1000,
-    #     help="Number of MCMC steps (default: 1000)"
-    # )
-
-    # parser.add_argument(
-    #     "--mcmc-half-life",
-    #     type=int,
-    #     default=200,
-    #     help="Half-life for temperature decay in MCMC (default: 200)"
-    # )
-
-    # parser.add_argument(
-    #     "--mcmc-temp-init",
-    #     type=float,
-    #     default=0.01,
-    #     help="Initial temperature for MCMC annealing (default: 0.01)"
-    # )
-
-    # parser.add_argument(
-    #     "--mutation-rate",
-    #     type=int,
-    #     default=1,
-    #     help="Mutations per MCMC step (default: 1)"
-    # )
-
-    # # MAP-Elites parameters
-    # parser.add_argument(
-    #     "--mapelites-iters",
-    #     type=int,
-    #     default=100,
-    #     help="Number of MAP-Elites generations (default: 100)"
-    # )
-
-    # parser.add_argument(
-    #     "--num-elites",
-    #     type=int,
-    #     default=100,
-    #     help="Number of elites in MAP-Elites archive (default: 100)"
-    # )
-
-    # parser.add_argument(
-    #     "--num-mutants",
-    #     type=int,
-    #     default=1,
-    #     help="Mutations per elite in MAP-Elites (default: 1)"
-    # )
-
-    # parser.add_argument(
-    #     "--num-sequences",
-    #     type=int,
-    #     default=200,
-    #     help="Initial sequences for MAP-Elites (default: 200)"
-    # )
-
-    # parser.add_argument(
-    #     "--min-len",
-    #     type=int,
-    #     default=10,
-    #     help="Minimum sequence length for MAP-Elites (default: 10)"
-    # )
-
-    # parser.add_argument(
-    #     "--max-len",
-    #     type=int,
-    #     default=20,
-    #     help="Maximum sequence length for MAP-Elites (default: 20)"
-    # )
-
-    # # Semigreedy parameters
-    # parser.add_argument(
-    #     "--semigreedy-tries",
-    #     type=int,
-    #     default=10,
-    #     help="Number of tries per semigreedy iteration (default: 10)"
-    # )
-
-    # parser.add_argument(
-    #     "--seed",
-    #     type=int,
-    #     default=0,
-    #     help="Random seed (default: 0)"
-    # )
-
-    # parser.add_argument(
-    #     "--contrastive-pdb",
-    #     type=str,
-    #     default=None,
-    #     help="PDB file or code for contrastive binder design (default: None)"
-    # )
 
     args = parser.parse_args()
     with open(args.config, "r") as f:
@@ -591,7 +385,8 @@ Examples:
         ),
         target_hotspot_residues=config.pop("target_hotspot_residues", None),
         experiment_folder=outdir,
-        helicity_value=config.pop("weights_helicity", -0.3)
+        helicity_value=config.pop("weights_helicity", -0.3),
+        cyclic_offset=config.pop("cyclic_offset", False)
     )
 
     elapsed = time.time() - start_time
